@@ -1,0 +1,64 @@
+before:
+  hooks:
+    - go mod tidy
+builds:
+  - flags:
+      - -trimpath
+    env:
+      - CGO_ENABLED=0
+    ldflags: |
+      -s -w -extldflags '-static'
+    goos:
+      - linux
+    goarch:
+      - amd64
+      - arm
+      - arm64
+    goarm:
+      - 6
+      - 7
+universal_binaries:
+  - replace: true
+changelog:
+  sort: asc
+archives:
+  - name_template: >-
+      {{ .ProjectName }}_
+      {{- title .Os }}_
+      {{- if eq .Arch "amd64" }}x86_64
+      {{- else if eq .Arch "386" }}i386
+      {{- else }}{{ .Arch }}{{ end }}
+      {{- if .Arm }}v{{ .Arm }}{{ end }}
+    format_overrides:
+      - goos: windows
+        format: zip
+    files:
+      - README.md
+      - LICENSE
+      - src: dist/CHANGELOG.md
+        dst: ""
+        strip_parent: true
+checksum:
+  name_template: "checksums.txt"
+snapshot:
+  name_template: "{{ .Tag }}-next"
+nfpms:
+  - package_name: pkgstat-bpf
+    vendor: Dinko Korunic
+    homepage: https://github.com/dkorunic/pktstat-bpf
+    maintainer: Dinko Korunic <dkorunic@gmail.com>
+    description: eBPF-based ethernet interface traffic monitor and reporting tool
+    license: MIT
+    formats:
+      - apk
+      - deb
+      - rpm
+      - termux.deb
+      - archlinux
+    bindir: /usr/bin
+    section: net
+    priority: optional
+    deb:
+      lintian_overrides:
+        - statically-linked-binary
+        - changelog-file-missing-in-native-package
