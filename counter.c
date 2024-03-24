@@ -211,15 +211,11 @@ static inline void process_packet(struct __sk_buff *skb) {
 }
 
 
-SEC(
-
-"tc")
-
+SEC("tc")
 int count_packets(struct __sk_buff *skb) {
     process_packet(skb);
 
     return TC_ACT_UNSPEC;
 }
 
-char __license[]
-SEC("license") = "MIT";
+char __license[] SEC("license") = "MIT";
