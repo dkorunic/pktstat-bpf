@@ -41,6 +41,10 @@ tasks:
       - gofumpt -l -w .
       - betteralign -apply ./...
 
+  generate:
+    cmds:
+      - go generate
+
   build:
     cmds:
       - task: fmt
