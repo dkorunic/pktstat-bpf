@@ -23,33 +23,76 @@ package main
 
 import "net/netip"
 
+var protoNumbers = map[uint8]string{
+	0:   "IPv4",
+	1:   "ICMPv4",
+	2:   "IGMP",
+	3:   "GGP",
+	4:   "IP-ENCAP",
+	5:   "ST",
+	6:   "TCP",
+	8:   "EGP",
+	9:   "IGP",
+	12:  "PUP",
+	17:  "UDP",
+	20:  "HMP",
+	22:  "XNS-IDP",
+	27:  "RDP",
+	29:  "ISO-TP4",
+	33:  "DCCP",
+	36:  "XTP",
+	37:  "DDP",
+	38:  "IDPR-CMTP",
+	41:  "IPv6",
+	43:  "IPv6-Route",
+	44:  "IPv6-Frag",
+	45:  "IDRP",
+	46:  "RSVP",
+	47:  "GRE",
+	50:  "IPSEC-ESP",
+	51:  "IPSEC-AH",
+	57:  "SKIP",
+	58:  "IPv6-ICMP",
+	59:  "IPv6-NoNxt",
+	60:  "IPv6-Opts",
+	73:  "RSPF",
+	81:  "VMTP",
+	88:  "EIGRP",
+	89:  "OSPFIGP",
+	93:  "AX.25",
+	94:  "IPIP",
+	97:  "ETHERIP",
+	98:  "ENCAP",
+	99:  "Tailscale", // TSMP
+	103: "PIM",
+	108: "IPCOMP",
+	112: "VRRP",
+	115: "L2TP",
+	124: "ISIS",
+	132: "SCTP",
+	133: "FC",
+	135: "Mobility-Header",
+	136: "UDPLite",
+	137: "MPLS-in-IP",
+	138: "MANET",
+	139: "HIP",
+	140: "Shim6",
+	141: "WESP",
+	142: "ROHC",
+	143: "Ethernet",
+	255: "Fragment",
+}
+
 // protoToString converts a protocol number to its corresponding name.
 //
 // p: the protocol number to convert.
 // string: the name of the protocol.
 func protoToString(p uint8) string {
-	switch p {
-	case 0x01:
-		return "ICMPv4"
-	case 0x02:
-		return "IGMP"
-	case 0x3a:
-		return "ICMPv6"
-	case 0x06:
-		return "TCP"
-	case 0x11:
-		return "UDP"
-	case 0x21:
-		return "DCCP"
-	case 0x2f:
-		return "GRE"
-	case 0x84:
-		return "SCTP"
-	case 0xFF:
-		return "Fragment"
-	default:
-		return "Unsupported"
+	if v, ok := protoNumbers[p]; ok {
+		return v
 	}
+
+	return "Unknown"
 }
 
 // bytesToAddr converts a 16-byte address to a netip.Addr.

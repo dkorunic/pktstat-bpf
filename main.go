@@ -55,12 +55,12 @@ func init() {
 func main() {
 	parseFags()
 
-	// Remove resource limits for kernels <5.11.
+	// Remove resource limits for kernels <5.11
 	if err := rlimit.RemoveMemlock(); err != nil {
 		log.Fatal("Removing memlock:", err)
 	}
 
-	// Load the compiled eBPF ELF and load it into the kernel.
+	// Load the compiled eBPF ELF and load it into the kernel
 	var objs counterObjects
 	if err := loadCounterObjects(&objs, nil); err != nil {
 		log.Fatal("Loading eBPF objects:", err)
@@ -69,10 +69,10 @@ func main() {
 
 	iface, err := net.InterfaceByName(*ifname)
 	if err != nil {
-		log.Fatalf("Getting interface %s: %s", *ifname, err)
+		log.Fatalf("Getting interface %s: %s", *ifname, err) //nolint:gocritic
 	}
 
-	// Attach count_packets to the network interface
+	// Attach count_packets to the network interface ingress (BPF_TCX_INGRESS)
 	linkI, err := link.AttachTCX(link.TCXOptions{
 		Program:   objs.CountPackets,
 		Attach:    ebpf.AttachTCXIngress,
@@ -83,7 +83,7 @@ func main() {
 	}
 	defer linkI.Close()
 
-	// Attach count_packets from the network interface
+	// Attach count_packets to the network interface egresss (BPF_TCX_EGRESS)
 	linkE, err := link.AttachTCX(link.TCXOptions{
 		Program:   objs.CountPackets,
 		Attach:    ebpf.AttachTCXEgress,

@@ -54,6 +54,7 @@ func processMap(m *ebpf.Map, start time.Time) ([]statEntry, error) {
 	stats := make([]statEntry, 0, m.MaxEntries())
 	iter := m.Iterate()
 
+	// build statEntry slice converting data where needed
 	for iter.Next(&key, &val) {
 		stats = append(stats, statEntry{
 			SrcIP:   bytesToAddr(key.Srcip.In6U.U6Addr8),

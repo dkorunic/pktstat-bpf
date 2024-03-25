@@ -7,15 +7,19 @@
 
 ## About
 
-pktstat-bpf is a work in progress simple replacement for ncurses-based [pktstat](https://github.com/dleonard0/pktstat), using tc BPF with TCX attaching. This will require a fairly recent Linux kernel.
+pktstat-bpf is a work in progress simple replacement for ncurses-based [pktstat](https://github.com/dleonard0/pktstat), using tc eBPF ([extended Berkeley Packet Filter](https://prototype-kernel.readthedocs.io/en/latest/bpf/)) with TCX attaching. It requires a fairly recent Linux kernel to be able to work.
+
+Using tc eBPF will allow packet statistics gathering even under high traffic conditions, typically several million packets per second even on an average server.
 
 At the end of the execution program will display per-IP and per-protocol (IPv4, IPv6, TCP, UDP, ICMPv4 and ICMPv6) statistics sorted by per-connection bps, packets and (source-IP:port, destination-IP:port) tuples.
+
+Program consists of the eBPF code in C and the pure-Go userland Golang program that parses and outputs final IP/port/protocol/bitrate statistics. Go part of the program uses [cillium/ebpf](https://github.com/cilium/ebpf) to load and run eBPF program.
 
 ![Demo](demo.gif)
 
 ## Requirements
 
-Sniffing traffic and loading TC BPF program typically requires root privileges or CAP_BPF [capabilities](https://man7.org/linux/man-pages/man7/capabilities.7.html):
+Sniffing traffic and loading TC eBPF program typically requires root privileges or CAP_BPF [capabilities](https://man7.org/linux/man-pages/man7/capabilities.7.html):
 
 ```shell
 $ setcap CAP_BPF=eip pktstat-bpf
