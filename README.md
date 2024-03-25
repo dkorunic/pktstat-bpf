@@ -7,7 +7,7 @@
 
 ## About
 
-pktstat-bpf is a work in progress simple replacement for ncurses-based [pktstat](https://github.com/dleonard0/pktstat), using tc eBPF ([extended Berkeley Packet Filter](https://prototype-kernel.readthedocs.io/en/latest/bpf/)) with TCX attaching. It requires a fairly recent Linux kernel to be able to work.
+pktstat-bpf is a work in progress simple replacement for ncurses-based [pktstat](https://github.com/dleonard0/pktstat), using tc eBPF ([extended Berkeley Packet Filter](https://prototype-kernel.readthedocs.io/en/latest/bpf/)) with TCX attaching (fd-based tc BPF attach API). It requires at minimum Linux kernel 6.6 or more recent.
 
 Using tc eBPF will allow packet statistics gathering even under high traffic conditions, typically several million packets per second even on an average server.
 
