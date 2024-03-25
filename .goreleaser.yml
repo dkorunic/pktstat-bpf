@@ -47,7 +47,7 @@ nfpms:
     vendor: Dinko Korunic
     homepage: https://github.com/dkorunic/pktstat-bpf
     maintainer: Dinko Korunic <dkorunic@gmail.com>
-    description: eBPF-based ethernet interface traffic monitor and reporting tool
+    description: tc/eBPF-based Ethernet interface traffic monitor and reporting tool
     license: MIT
     formats:
       - apk
