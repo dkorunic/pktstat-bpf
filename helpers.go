@@ -21,7 +21,11 @@
 
 package main
 
-import "net/netip"
+import (
+	"net"
+	"net/netip"
+	"strings"
+)
 
 var protoNumbers = map[uint8]string{
 	0:   "IPv4",
@@ -100,4 +104,34 @@ func protoToString(p uint8) string {
 // It takes an addr parameter of type [16]byte and returns a netip.Addr.
 func bytesToAddr(addr [16]byte) netip.Addr {
 	return netip.AddrFrom16(addr).Unmap()
+}
+
+// findFirstEtherIface returns the name of the first non-loopback, up Ethernet interface.
+//
+// It iterates over all network interfaces and checks if each interface is up and not a loopback interface.
+// If an interface meets these criteria, its name is returned. If no suitable interface is found, the default
+// interface name is returned.
+//
+// Returns:
+//
+//	string: The name of the first non-loopback, up Ethernet interface.
+func findFirstEtherIface() string {
+	i, err := net.Interfaces()
+	if err != nil {
+		return defaultIface
+	}
+
+	for _, f := range i {
+		if (f.Flags&net.FlagUp == 0) || (f.Flags&net.FlagLoopback) != 0 {
+			continue
+		}
+
+		if strings.Contains(f.Name, "docker") {
+			continue
+		}
+
+		return f.Name
+	}
+
+	return defaultIface
 }

@@ -36,7 +36,7 @@ FLAGS
   -j, --json               if true, output in JSON format
       --version            display program version
   -i, --iface STRING       interface to read from (default: eth0)
-  -t, --timeout DURATION   timeout for packet capture (default: 0s)
+  -t, --timeout DURATION   timeout for packet capture (default: 1h0m0s)
 ```
 
 It is possible to specify interface with `--iface`.

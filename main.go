@@ -57,42 +57,42 @@ func main() {
 
 	// Remove resource limits for kernels <5.11
 	if err := rlimit.RemoveMemlock(); err != nil {
-		log.Fatal("Removing memlock:", err)
+		log.Fatalf("Error removing memlock: %v", err)
 	}
 
 	// Load the compiled eBPF ELF and load it into the kernel
 	var objs counterObjects
 	if err := loadCounterObjects(&objs, nil); err != nil {
-		log.Fatal("Loading eBPF objects:", err)
+		log.Fatalf("Error loading eBPF objects: %v", err)
 	}
 	defer objs.Close()
 
 	iface, err := net.InterfaceByName(*ifname)
 	if err != nil {
-		log.Fatalf("Getting interface %s: %s", *ifname, err) //nolint:gocritic
+		log.Fatalf("Error getting interface %q: %v", *ifname, err) //nolint:gocritic
 	}
 
 	// Attach count_packets to the network interface ingress (BPF_TCX_INGRESS)
-	linkI, err := link.AttachTCX(link.TCXOptions{
+	linkIngress, err := link.AttachTCX(link.TCXOptions{
 		Program:   objs.CountPackets,
 		Attach:    ebpf.AttachTCXIngress,
 		Interface: iface.Index,
 	})
 	if err != nil {
-		log.Fatal("Attaching TCX ingress:", err)
+		log.Fatalf("Error attaching %q TCX ingress: %v", *ifname, err)
 	}
-	defer linkI.Close()
+	defer linkIngress.Close()
 
 	// Attach count_packets to the network interface egresss (BPF_TCX_EGRESS)
-	linkE, err := link.AttachTCX(link.TCXOptions{
+	linkEgress, err := link.AttachTCX(link.TCXOptions{
 		Program:   objs.CountPackets,
 		Attach:    ebpf.AttachTCXEgress,
 		Interface: iface.Index,
 	})
 	if err != nil {
-		log.Fatal("Attaching TCX egress:", err)
+		log.Fatalf("Error attaching %q TCX egress: %v", *ifname, err)
 	}
-	defer linkE.Close()
+	defer linkEgress.Close()
 
 	log.Printf("Starting on interface %q", *ifname)
 
@@ -121,7 +121,7 @@ func main() {
 
 	m, err := processMap(objs.PktCount, startTime)
 	if err != nil {
-		log.Fatal("Error reading map: %n", err)
+		log.Fatalf("Error reading eBPF map: %v", err)
 	}
 
 	if *jsonOutput {

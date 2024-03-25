@@ -32,7 +32,7 @@ import (
 
 const (
 	defaultIface   = "eth0"
-	defaultTimeout = 0
+	defaultTimeout = 1 * time.Hour
 )
 
 var (
@@ -49,7 +49,7 @@ func parseFags() {
 
 	version = fs.BoolLong("version", "display program version")
 
-	ifname = fs.String('i', "iface", defaultIface, "interface to read from")
+	ifname = fs.String('i', "iface", findFirstEtherIface(), "interface to read from")
 
 	timeout = fs.Duration('t', "timeout", defaultTimeout, "timeout for packet capture")
 
@@ -69,7 +69,7 @@ func parseFags() {
 	}
 
 	if *version {
-		fmt.Printf("pktstat %v %v%v, built on: %v\n", GitTag, GitCommit, GitDirty, BuildTime)
+		fmt.Printf("pktstat-bpf %v %v%v, built on: %v\n", GitTag, GitCommit, GitDirty, BuildTime)
 
 		os.Exit(0)
 	}
