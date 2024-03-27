@@ -36,9 +36,9 @@ const (
 )
 
 var (
-	ifname                    *string
-	jsonOutput, version, help *bool
-	timeout                   *time.Duration
+	ifname                            *string
+	jsonOutput, version, help, useXDP *bool
+	timeout                           *time.Duration
 )
 
 func parseFags() {
@@ -46,6 +46,7 @@ func parseFags() {
 
 	help = fs.Bool('?', "help", "display help")
 	jsonOutput = fs.Bool('j', "json", "if true, output in JSON format")
+	useXDP = fs.Bool('x', "xdp", "if true, use XDP instead of TC (this disables egress statistics)")
 
 	version = fs.BoolLong("version", "display program version")
 

@@ -72,29 +72,56 @@ func main() {
 		log.Fatalf("Error getting interface %q: %v", *ifname, err) //nolint:gocritic
 	}
 
-	// Attach count_packets to the network interface ingress (BPF_TCX_INGRESS)
-	linkIngress, err := link.AttachTCX(link.TCXOptions{
-		Program:   objs.CountPackets,
-		Attach:    ebpf.AttachTCXIngress,
-		Interface: iface.Index,
-	})
-	if err != nil {
-		log.Fatalf("Error attaching %q TCX ingress: %v", *ifname, err)
-	}
-	defer linkIngress.Close()
+	var linkIngress, linkEgress link.Link
 
-	// Attach count_packets to the network interface egresss (BPF_TCX_EGRESS)
-	linkEgress, err := link.AttachTCX(link.TCXOptions{
-		Program:   objs.CountPackets,
-		Attach:    ebpf.AttachTCXEgress,
-		Interface: iface.Index,
-	})
-	if err != nil {
-		log.Fatalf("Error attaching %q TCX egress: %v", *ifname, err)
-	}
-	defer linkEgress.Close()
+	if *useXDP {
+		// Attach count_packets to the network interface ingress, uses BPF_XDP
+		// NOTE: no egress support yet for BPF_XDP path
+		linkIngress, err = link.AttachXDP(link.XDPOptions{
+			Program:   objs.XdpCountPackets,
+			Interface: iface.Index,
+		})
+		if err != nil {
+			log.Fatalf("Error attaching %q XDP ingress: %v", *ifname, err)
+		}
+	} else {
+		// Attach count_packets to the network interface ingress, uses BPF_TCX_INGRESS
+		linkIngress, err = link.AttachTCX(link.TCXOptions{
+			Program:   objs.TcCountPackets,
+			Attach:    ebpf.AttachTCXIngress,
+			Interface: iface.Index,
+		})
+		if err != nil {
+			log.Fatalf("Error attaching %q TCX ingress: %v", *ifname, err)
+		}
 
-	log.Printf("Starting on interface %q", *ifname)
+		// Attach count_packets to the network interface egresss, uses BPF_TCX_EGRESS
+		linkEgress, err = link.AttachTCX(link.TCXOptions{
+			Program:   objs.TcCountPackets,
+			Attach:    ebpf.AttachTCXEgress,
+			Interface: iface.Index,
+		})
+		if err != nil {
+			log.Fatalf("Error attaching %q TCX egress: %v", *ifname, err)
+		}
+	}
+
+	defer func() {
+		if linkIngress != nil {
+			linkIngress.Close()
+		}
+
+		if linkEgress != nil {
+			linkEgress.Close()
+		}
+	}()
+
+	if *useXDP {
+		log.Printf("Starting on interface %q using XDP (eXpress Data Path) eBPF mode", *ifname)
+		log.Printf("Due to XDP mode, egress statistics are not available. Upon program exit, interface reset is possible.")
+	} else {
+		log.Printf("Starting on interface %q using TC (Traffic Control) eBPF mode", *ifname)
+	}
 
 	c1, cancel := context.WithCancel(context.Background())
 	defer cancel()

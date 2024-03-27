@@ -70,6 +70,7 @@ SEC(".maps");
 static const __u8 ip4in6[] = {0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0xff, 0xff};
 
 static inline int process_ip4(struct iphdr *ip4, void *data_end, statkey *key) {
+    // validate IPv4 size
     if ((void *) ip4 + sizeof(*ip4) > data_end) {
         return NOK;
     }
@@ -117,6 +118,7 @@ static inline int process_ip4(struct iphdr *ip4, void *data_end, statkey *key) {
 }
 
 static inline int process_ip6(struct ipv6hdr *ip6, void *data_end, statkey *key) {
+    // validate IPv6 size
     if ((void *) ip6 + sizeof(*ip6) > data_end) {
         return NOK;
     }
@@ -158,15 +160,10 @@ static inline int process_ip6(struct ipv6hdr *ip6, void *data_end, statkey *key)
     return OK;
 }
 
-static inline void process_packet(struct __sk_buff *skb) {
-    void *data = (void *) (long) skb->data;
-    void *data_end = (void *) (long) skb->data_end;
-    __u64 pkt_len = 0;
-
+static inline void process_eth(void *data, void *data_end, __u64 pkt_len) {
     struct ethhdr *eth = data;
-    pkt_len = data_end - data;
 
-    // validate ether size
+    // validate Ethernet size
     if ((void *) eth + sizeof(*eth) > data_end) {
         return;
     }
@@ -202,18 +199,38 @@ static inline void process_packet(struct __sk_buff *skb) {
     if (val) {
         // atomic XADD, doesn't need bpf_spin_lock()
         __sync_fetch_and_add(&val->packets, 1);
-        __sync_fetch_and_add(&val->bytes, skb->len);
+        __sync_fetch_and_add(&val->bytes, pkt_len);
     } else {
-        statvalue initval = {.packets = 1, .bytes = skb->len};
+        statvalue initval = {.packets = 1, .bytes = pkt_len};
 
         bpf_map_update_elem(&pkt_count, &key, &initval, BPF_NOEXIST);
     }
 }
 
+static inline void tc_process_packet(struct __sk_buff *skb) {
+    void *data = (void *) (long) skb->data;
+    void *data_end = (void *) (long) skb->data_end;
+
+    process_eth(data, data_end, skb->len);
+}
+
+static inline void xdp_process_packet(struct xdp_md *xdp) {
+    void *data = (void *) (long) xdp->data;
+    void *data_end = (void *) (long) xdp->data_end;
+
+    process_eth(data, data_end, data_end - data);
+}
+
+SEC("xdp")
+int xdp_count_packets(struct xdp_md *xdp) {
+    xdp_process_packet(xdp);
+
+    return XDP_PASS;
+}
 
 SEC("tc")
-int count_packets(struct __sk_buff *skb) {
-    process_packet(skb);
+int tc_count_packets(struct __sk_buff *skb) {
+    tc_process_packet(skb);
 
     return TC_ACT_UNSPEC;
 }
