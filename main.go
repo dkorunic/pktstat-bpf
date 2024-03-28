@@ -77,6 +77,7 @@ func main() {
 	if *useXDP {
 		// Attach count_packets to the network interface ingress, uses BPF_XDP
 		// NOTE: no egress support yet for BPF_XDP path
+		// NOTE: BPF_LINK_CREATE for XDP requires v5.9 kernel, but might work with older RHEL kernels
 		linkIngress, err = link.AttachXDP(link.XDPOptions{
 			Program:   objs.XdpCountPackets,
 			Interface: iface.Index,
@@ -85,6 +86,7 @@ func main() {
 			log.Fatalf("Error attaching %q XDP ingress: %v", *ifname, err)
 		}
 	} else {
+		// NOTE: BPF_TCX_INGRESS and BPF_TCX_EGRESS require v6.6 kernel
 		// Attach count_packets to the network interface ingress, uses BPF_TCX_INGRESS
 		linkIngress, err = link.AttachTCX(link.TCXOptions{
 			Program:   objs.TcCountPackets,
