@@ -31,7 +31,7 @@ Typically BPF JIT (Just in Time compiler) should be enabled for best performance
 echo 1 > /proc/sys/net/core/bpf_jit_enable
 ```
 
-Additionally in case of XDP, not all NIC drivers support **Native XDP** (XDP program is loaded by NIC driver with XDP support as part of initial receive path) or even **Offloaded XDP** (XDP program loads directly on NIC with hardware XDP support and executes withour using CPU), causing kernel to fallback on **Generic XDP** with reduced performance.
+Additionally in case of XDP, not all NIC drivers support **Native XDP** (XDP program is loaded by NIC driver with XDP support as part of initial receive path and most common 10G drivers already support this) or even **Offloaded XDP** (XDP program loads directly on NIC with hardware XDP support and executes without using CPU), causing kernel to fallback on **Generic XDP** with reduced performance. Generic XDP does not require any special support from NIC drivers, but such XDP happens much later in the networking stack.
 
 A list of XDP compatible drivers follows:
 
