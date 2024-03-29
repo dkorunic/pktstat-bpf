@@ -25,6 +25,19 @@ Sniffing traffic and loading TC or XDP eBPF program typically requires root priv
 $ setcap CAP_BPF=eip pktstat-bpf
 ```
 
+Typically BPF JIT (Just in Time compiler) should be enabled for best performance:
+
+```shell
+echo 1 > /proc/sys/net/core/bpf_jit_enable
+```
+
+Additionally in case of XDP, not all NIC drivers support **Native XDP** (XDP program is loaded by NIC driver with XDP support as part of initial receive path) or even **Offloaded XDP** (XDP program loads directly on NIC with hardware XDP support and executes withour using CPU), causing kernel to fallback on **Generic XDP** with reduced performance.
+
+A list of XDP compatible drivers follows:
+
+- [xdp-project XDP driver list](https://github.com/xdp-project/xdp-project/blob/master/areas/drivers/README.org)
+- [IO Visor XDP driver list](https://github.com/iovisor/bcc/blob/master/docs/kernel-versions.md#xdp)
+
 ## Usage
 
 ```shell
@@ -36,7 +49,8 @@ FLAGS
   -j, --json               if true, output in JSON format
   -x, --xdp                if true, use XDP instead of TC (this disables egress statistics)
       --version            display program version
-  -i, --iface STRING       interface to read from (default: eth0)
+  -i, --iface STRING       interface to read from (default: anpi5)
+      --xdp_mode STRING    XDP attach mode (auto, generic, native or offload; native and offload require NIC driver support) (default: auto)
   -t, --timeout DURATION   timeout for packet capture (default: 1h0m0s)
 ```
 
@@ -47,3 +61,5 @@ Timeout `--timeout` will stop execution after a specified time, but it is also p
 With `--json` it is possible to get traffic statistics in JSON format.
 
 With `--xdp` program will switch from TC eBPF mode to XDP eBPF mode, working in even more high-performance mode however this will disable all egress statistics. On program exit it is also possible to get an interface reset, so it is best to use this program inside of [screen](https://www.gnu.org/software/screen/) or [tmux](https://github.com/tmux/tmux).
+
+Additionally it is possible to change XDP attach mode with `--xdp_mode` from `auto` (best-effort between native and generic) to `native` or `offload`, for NIC drivers that support XDP or even NICs that have hardware XDP support.

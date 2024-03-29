@@ -81,6 +81,7 @@ func main() {
 		linkIngress, err = link.AttachXDP(link.XDPOptions{
 			Program:   objs.XdpCountPackets,
 			Interface: iface.Index,
+			Flags:     xdpAttachFlags,
 		})
 		if err != nil {
 			log.Fatalf("Error attaching %q XDP ingress: %v", *ifname, err)

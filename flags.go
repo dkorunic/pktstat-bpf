@@ -26,19 +26,23 @@ import (
 	"os"
 	"time"
 
+	"github.com/cilium/ebpf/link"
 	"github.com/peterbourgon/ff/v4"
 	"github.com/peterbourgon/ff/v4/ffhelp"
 )
 
 const (
-	defaultIface   = "eth0"
-	defaultTimeout = 1 * time.Hour
+	defaultIface                          = "eth0"
+	defaultTimeout                        = 1 * time.Hour
+	defaultXDPMode                        = "auto"
+	XDPAttachModeNone link.XDPAttachFlags = 0
 )
 
 var (
-	ifname                            *string
+	ifname, xdpMode                   *string
 	jsonOutput, version, help, useXDP *bool
 	timeout                           *time.Duration
+	xdpAttachFlags                    link.XDPAttachFlags
 )
 
 func parseFags() {
@@ -51,6 +55,7 @@ func parseFags() {
 	version = fs.BoolLong("version", "display program version")
 
 	ifname = fs.String('i', "iface", findFirstEtherIface(), "interface to read from")
+	xdpMode = fs.StringLong("xdp_mode", defaultXDPMode, "XDP attach mode (auto, generic, native or offload; native and offload require NIC driver support)")
 
 	timeout = fs.Duration('t', "timeout", defaultTimeout, "timeout for packet capture")
 
@@ -73,5 +78,24 @@ func parseFags() {
 		fmt.Printf("pktstat-bpf %v %v%v, built on: %v\n", GitTag, GitCommit, GitDirty, BuildTime)
 
 		os.Exit(0)
+	}
+
+	switch *xdpMode {
+	case "", "auto", "best":
+		// kernel will select the best mode starting with Native and fallback to Generic
+		xdpAttachFlags = XDPAttachModeNone
+	case "generic":
+		// SKB generic XDP mode
+		xdpAttachFlags = link.XDPGenericMode
+	case "native":
+		// XDP support from NIC driver required
+		xdpAttachFlags = link.XDPDriverMode
+	case "offload":
+		// only for NICs with HW XDP support
+		xdpAttachFlags = link.XDPOffloadMode
+	default:
+		fmt.Printf("Error invalid XDP mode: %v, pick from: auto, generic, native or offload\n", *xdpMode)
+
+		os.Exit(1)
 	}
 }
