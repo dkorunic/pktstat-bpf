@@ -87,10 +87,10 @@ func parseFags() {
 	case "generic":
 		// SKB generic XDP mode
 		xdpAttachFlags = link.XDPGenericMode
-	case "native":
+	case "native", "driver":
 		// XDP support from NIC driver required
 		xdpAttachFlags = link.XDPDriverMode
-	case "offload":
+	case "offload", "hardware":
 		// only for NICs with HW XDP support
 		xdpAttachFlags = link.XDPOffloadMode
 	default:
