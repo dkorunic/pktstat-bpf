@@ -33,7 +33,18 @@ echo 1 > /proc/sys/net/core/bpf_jit_enable
 
 Additionally in case of XDP, not all NIC drivers support **Native XDP** (XDP program is loaded by NIC driver with XDP support as part of initial receive path and most common 10G drivers already support this) or even **Offloaded XDP** (XDP program loads directly on NIC with hardware XDP support and executes without using CPU), causing kernel to fallback on **Generic XDP** with reduced performance. Generic XDP does not require any special support from NIC drivers, but such XDP happens much later in the networking stack.
 
-A list of XDP compatible drivers follows:
+The following table maps features, requirements and performance for described modes:
+
+| Capture type                                     | Ingress | Egress | Performance    | Kernel required | SmartNIC required |
+| ------------------------------------------------ | ------- | ------ | -------------- | --------------- | ----------------- |
+| [PCAP](https://github.com/dkorunic/pktstat)      | Yes     | Yes    | Low            | Any             | No                |
+| [AF_PACKET](https://github.com/dkorunic/pktstat) | Yes     | Yes    | Medium         | Any             | No                |
+| TC                                               | Yes     | Yes    | **High**       | v6.6            | No                |
+| XDP Generic                                      | Yes     | **No** | **High**       | v4.8 / v5.9     | No                |
+| XDP Native                                       | Yes     | **No** | **Very high**  | v4.8 / v5.9     | No                |
+| XDP Offloaded                                    | Yes     | **No** | **Wire speed** | v4.8 / v5.9     | **Yes**           |
+
+A list of XDP compatible drivers follows (and it is not necessarily up-to-date):
 
 - [xdp-project XDP driver list](https://github.com/xdp-project/xdp-project/blob/master/areas/drivers/README.org)
 - [IO Visor XDP driver list](https://github.com/iovisor/bcc/blob/master/docs/kernel-versions.md#xdp)
