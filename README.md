@@ -7,22 +7,22 @@
 
 ## About
 
-pktstat-bpf is a work in progress simple replacement for ncurses-based [pktstat](https://github.com/dleonard0/pktstat), using eBPF ([extended Berkeley Packet Filter](https://prototype-kernel.readthedocs.io/en/latest/bpf/)) program for TC (Traffic Control) system with TCX attaching (fd-based tc BPF attach API). It requires at minimum Linux kernel v6.6 or more recent. Alternatively it can also use [XDP](https://github.com/xdp-project/xdp-tutorial) (eXpress Data Path) system but this will disable egress statistics since XDP works only in ingress path. XDP mode supports even older kernels, starting with Linux kernel v4.8.
+pktstat-bpf is a simple replacement for ncurses-based [pktstat](https://github.com/dleonard0/pktstat), using Linux eBPF ([extended Berkeley Packet Filter](https://prototype-kernel.readthedocs.io/en/latest/bpf/)) program, allowing packet statistics gathering even under **very high traffic volume** conditions, typically several million packets per second even on an average server. In this scenario (high volume, DoS attacks etc.) typically both regular PCAP or AF_PACKET solutions start being unreliable due to increasing packet loss.
 
-Using TC or XDP will allow packet statistics gathering even under high traffic conditions, typically several million packets per second even on an average server.
+By default it uses **TC** (Traffic Control) eBPF hooks with TCX attaching and that requires at minimum Linux kernel **v6.6** for both ingress and egress traffic statistics. Alternatively it can switch to [XDP](https://github.com/xdp-project/xdp-tutorial) (eXpress Data Path) hook but with a consequence of **losing egress statistics** since **XDP** works only in ingress path. XDP mode supports older kernels, starting with Linux kernel v4.8, but XDP program to network interface attaching call requires Linux kernel **v5.9**. As always, some distributions might have backported patches (notable example is Red Hat Enterprise Linux kernel) and XDP/TC eBPF program might work on older kernels too.
 
-At the end of the execution program will display per-IP and per-protocol (IPv4, IPv6, TCP, UDP, ICMPv4 and ICMPv6) statistics sorted by per-connection bps, packets and (source-IP:port, destination-IP:port) tuples.
+At the end of the execution program will display per-IP and per-protocol statistics sorted by per-connection bps, packets and (source-IP:port, destination-IP:port) tuples.
 
-Program consists of the [eBPF code in C](counter.c) and the pure-Go userland Golang program that parses and outputs final IP/port/protocol/bitrate statistics. Go part of the program uses [cillium/ebpf](https://github.com/cilium/ebpf) to load and run eBPF program.
+Program consists of the [eBPF code in C](counter.c) and the pure-Go userland Golang program that parses and outputs final IP/port/protocol/bitrate statistics. Go part of the program uses wonderful [cillium/ebpf](https://github.com/cilium/ebpf) library to load and run eBPF program, interfacing with eBPF map.
 
 ![Demo](demo.gif)
 
 ## Requirements
 
-Sniffing traffic and loading TC or XDP eBPF program typically requires root privileges or CAP_BPF [capabilities](https://man7.org/linux/man-pages/man7/capabilities.7.html):
+Loading eBPF program typically requires root privileges, but it is also possible to run rootless and set specific CAP_BPF and CAP_NET_ADMIN [capabilities](https://man7.org/linux/man-pages/man7/capabilities.7.html):
 
 ```shell
-$ setcap CAP_BPF=eip pktstat-bpf
+$ setcap CAP_BPF,CAP_NET_ADMIN=eip pktstat-bpf
 ```
 
 Typically BPF JIT (Just in Time compiler) should be enabled for best performance:
@@ -31,18 +31,18 @@ Typically BPF JIT (Just in Time compiler) should be enabled for best performance
 echo 1 > /proc/sys/net/core/bpf_jit_enable
 ```
 
-Additionally in case of XDP, not all NIC drivers support **Native XDP** (XDP program is loaded by NIC driver with XDP support as part of initial receive path and most common 10G drivers already support this) or even **Offloaded XDP** (XDP program loads directly on NIC with hardware XDP support and executes without using CPU), causing kernel to fallback on **Generic XDP** with reduced performance. Generic XDP does not require any special support from NIC drivers, but such XDP happens much later in the networking stack.
+In case of XDP, not all NIC drivers support **Native XDP** (XDP program is loaded by NIC driver with XDP support as part of initial receive path and most common 10G drivers already support this) or even **Offloaded XDP** (XDP program loads directly on NIC with hardware XDP support and executes without using CPU), causing kernel to fallback on **Generic XDP** with reduced performance. Generic XDP does not require any special support from NIC drivers, but such XDP happens much later in the networking stack and in such case performance is more or less equivalent to TC hooks.
 
-The following table maps features, requirements and performance for described modes:
+The following table maps features, requirements and expected performance for described modes:
 
 | Capture type                                     | Ingress | Egress | Performance    | Kernel required | SmartNIC required |
 | ------------------------------------------------ | ------- | ------ | -------------- | --------------- | ----------------- |
 | [PCAP](https://github.com/dkorunic/pktstat)      | Yes     | Yes    | Low            | Any             | No                |
 | [AF_PACKET](https://github.com/dkorunic/pktstat) | Yes     | Yes    | Medium         | Any             | No                |
 | TC                                               | Yes     | Yes    | **High**       | v6.6            | No                |
-| XDP Generic                                      | Yes     | **No** | **High**       | v4.8 / v5.9     | No                |
-| XDP Native                                       | Yes     | **No** | **Very high**  | v4.8 / v5.9     | No                |
-| XDP Offloaded                                    | Yes     | **No** | **Wire speed** | v4.8 / v5.9     | **Yes**           |
+| XDP Generic                                      | Yes     | **No** | **High**       | v5.9            | No                |
+| XDP Native                                       | Yes     | **No** | **Very high**  | v5.9            | No                |
+| XDP Offloaded                                    | Yes     | **No** | **Wire speed** | v5.9            | **Yes**           |
 
 A list of XDP compatible drivers follows (and it is not necessarily up-to-date):
 
