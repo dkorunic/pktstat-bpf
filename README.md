@@ -19,11 +19,7 @@ Program consists of the [eBPF code in C](counter.c) and the pure-Go userland Gol
 
 ## Requirements
 
-Loading eBPF program typically requires root privileges, but it is also possible to run rootless and set specific `CAP_BPF` and `CAP_NET_ADMIN` [capabilities](https://man7.org/linux/man-pages/man7/capabilities.7.html):
-
-```shell
-$ setcap CAP_BPF,CAP_NET_ADMIN=eip pktstat-bpf
-```
+Loading eBPF program typically requires root privileges and in our specific case pointer arhithmetics in eBPF code causes [eBPF verifier](https://docs.kernel.org/bpf/verifier.html) to deny non-root use.
 
 Typically BPF JIT (Just in Time compiler) should be enabled for best performance:
 
