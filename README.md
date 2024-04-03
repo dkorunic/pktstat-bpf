@@ -19,7 +19,7 @@ Program consists of the [eBPF code in C](counter.c) and the pure-Go userland Gol
 
 ## Requirements
 
-Loading eBPF program typically requires root privileges and in our specific case pointer arhithmetics in eBPF code causes [eBPF verifier](https://docs.kernel.org/bpf/verifier.html) to deny non-root use.
+Loading eBPF program typically requires root privileges and in our specific case pointer arithmetics in eBPF code causes [eBPF verifier](https://docs.kernel.org/bpf/verifier.html) to explicitly deny non-root use.
 
 Typically BPF JIT (Just in Time compiler) should be enabled for best performance:
 
