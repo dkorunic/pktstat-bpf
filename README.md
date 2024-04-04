@@ -5,6 +5,8 @@
 
 ![](gopher.jpg)
 
+(Go language Gopher flying on a eBPF bee and carrying a switch, created by Microsoft Designer DALL-E 3)
+
 ## About
 
 pktstat-bpf is a simple replacement for ncurses/libpcap-based [pktstat](https://github.com/dleonard0/pktstat), using Linux eBPF ([extended Berkeley Packet Filter](https://prototype-kernel.readthedocs.io/en/latest/bpf/)) program, allowing packet statistics gathering even under **very high traffic volume** conditions, typically several million packets per second even on an average server. In this scenario (high volume, DoS attacks etc.) typically regular packet capture solutions start being unreliable due to increasing packet loss.
