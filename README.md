@@ -36,7 +36,7 @@ The following table maps features, requirements and expected performance for des
 | Capture type                                        | Ingress | Egress | Performance    | Kernel required | SmartNIC required |
 | --------------------------------------------------- | ------- | ------ | -------------- | --------------- | ----------------- |
 | Generic [PCAP](https://github.com/dkorunic/pktstat) | Yes     | Yes    | Low            | Any             | No                |
-| [AF_PACKET](https://github.com/dkorunic/pktstat)    | Yes     | Yes    | Medium         | Any             | No                |
+| [AF_PACKET](https://github.com/dkorunic/pktstat)    | Yes     | Yes    | Medium         | v2.2            | No                |
 | TC                                                  | Yes     | Yes    | **High**       | v6.6            | No                |
 | XDP Generic                                         | Yes     | **No** | **High**       | v5.9            | No                |
 | XDP Native                                          | Yes     | **No** | **Very high**  | v5.9            | No                |
