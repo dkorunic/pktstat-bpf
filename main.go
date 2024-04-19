@@ -23,6 +23,7 @@ package main
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log"
 	"net"
@@ -33,6 +34,7 @@ import (
 	"time"
 
 	"github.com/cilium/ebpf"
+	"github.com/cilium/ebpf/features"
 	"github.com/cilium/ebpf/link"
 	"github.com/cilium/ebpf/rlimit"
 )
@@ -75,6 +77,15 @@ func main() {
 	var linkIngress, linkEgress link.Link
 
 	if *useXDP {
+		err = features.HaveProgramType(ebpf.XDP)
+		if errors.Is(err, ebpf.ErrNotSupported) {
+			log.Fatalf("XDP not supported on this kernel")
+		}
+
+		if err != nil {
+			log.Fatalf("Error checking XDP support: %v", err)
+		}
+
 		// Attach count_packets to the network interface ingress, uses BPF_XDP
 		// NOTE: no egress support yet for BPF_XDP path
 		// NOTE: BPF_LINK_CREATE for XDP requires v5.9 kernel, but might work with older RHEL kernels
@@ -87,6 +98,15 @@ func main() {
 			log.Fatalf("Error attaching %q XDP ingress: %v", *ifname, err)
 		}
 	} else {
+		err = features.HaveProgramType(ebpf.SchedACT)
+		if errors.Is(err, ebpf.ErrNotSupported) {
+			log.Fatalf("SchedACT not supported on this kernel")
+		}
+
+		if err != nil {
+			log.Fatalf("Error checking SchedACT support: %v", err)
+		}
+
 		// NOTE: BPF_TCX_INGRESS and BPF_TCX_EGRESS require v6.6 kernel
 		// Attach count_packets to the network interface ingress, uses BPF_TCX_INGRESS
 		linkIngress, err = link.AttachTCX(link.TCXOptions{
