@@ -295,4 +295,4 @@ int tc_count_packets(struct __sk_buff *skb) {
   return TC_ACT_UNSPEC;
 }
 
-char __license[] SEC("license") = "MIT";
+char __license[] SEC("license") = "Dual MIT/GPL";
