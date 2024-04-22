@@ -76,6 +76,7 @@ func main() {
 
 	var linkIngress, linkEgress link.Link
 
+	//nolint:nestif
 	if *useXDP {
 		err = features.HaveProgramType(ebpf.XDP)
 		if errors.Is(err, ebpf.ErrNotSupported) {
