@@ -3,7 +3,7 @@ module github.com/dkorunic/pktstat-bpf
 go 1.22.1
 
 require (
-	github.com/cilium/ebpf v0.14.0
+	github.com/cilium/ebpf v0.15.0
 	github.com/json-iterator/go v1.1.12
 	github.com/peterbourgon/ff/v4 v4.0.0-alpha.4
 )
