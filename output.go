@@ -28,7 +28,7 @@ import (
 	"time"
 
 	"github.com/cilium/ebpf"
-	jsoniter "github.com/json-iterator/go"
+	"github.com/goccy/go-json"
 )
 
 const (
@@ -117,12 +117,10 @@ func outputPlain(m []statEntry) {
 // outputJSON marshals the given slice of statEntry structs into a JSON string and prints it.
 //
 // The function takes a slice of statEntry structs as a parameter.
-// It uses the jsoniter library to configure the JSON encoder to be compatible with the standard library.
-// The slice is then marshaled into a JSON string using the Marshal function of the jsoniter package.
+// The slice is marshaled into a JSON string using the Marshal function of the goccy/go-json package.
 // The resulting JSON string is printed using the Printf function from the fmt package.
 // The function does not return any value.
 func outputJSON(m []statEntry) {
-	json := jsoniter.ConfigCompatibleWithStandardLibrary
 	out, _ := json.Marshal(m)
 
 	fmt.Printf("%v\n", string(out))
