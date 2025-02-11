@@ -57,8 +57,9 @@ FLAGS
   -?, --help               display help
   -j, --json               if true, output in JSON format
   -x, --xdp                if true, use XDP instead of TC (this disables egress statistics)
+  -p, --pid                if true, use process ID for packets (works with TC only)
       --version            display program version
-  -i, --iface STRING       interface to read from (default: anpi5)
+  -i, --iface STRING       interface to read from (default: eth0)
       --xdp_mode STRING    XDP attach mode (auto, generic, native or offload; native and offload require NIC driver support) (default: auto)
   -t, --timeout DURATION   timeout for packet capture (default: 1h0m0s)
 ```
@@ -72,6 +73,8 @@ With `--json` it is possible to get traffic statistics in JSON format.
 With `--xdp` program will switch from TC eBPF mode to XDP eBPF mode, working in even more high-performance mode however this will disable all egress statistics. On program exit it is also possible to get an interface reset, so it is best to use this program inside of [screen](https://www.gnu.org/software/screen/) or [tmux](https://github.com/tmux/tmux).
 
 Additionally it is possible to change XDP attach mode with `--xdp_mode` from `auto` (best-effort between native and generic) to `native` or `offload`, for NIC drivers that support XDP or even NICs that have hardware XDP support.
+
+With `--pid` it is also possible to enable process ID (PID) tracking. If packet processing is triggered by user-space process, we are able to display process ID, but in case the packet is processed by kernel (forwarding, routing, kernel-generated packets) PID will be zero. Additionally, PID tracking works only in TC eBPF mode.
 
 ## Star History
 
