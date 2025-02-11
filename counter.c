@@ -49,6 +49,7 @@ typedef struct statkey_t {
   __u16 src_port;        // source port
   __u16 dst_port;        // destination port
   __u8 proto;            // transport protocol
+  pid_t pid;             // process ID
 } statkey;
 
 // Map value struct with counters
@@ -244,6 +245,70 @@ static inline void process_eth(void *data, void *data_end, __u64 pkt_len) {
 }
 
 /**
+ * Process the Ethernet header and extract relevant information, including the
+ * process ID, to populate the key.
+ *
+ * @param data pointer to the start of the Ethernet header
+ * @param data_end pointer to the end of the packet data
+ * @param pkt_len length of the packet
+ * @param pid process ID to be included in the key
+ *
+ * @return none
+ *
+ * @throws none
+ */
+static inline void process_eth_pid(void *data, void *data_end, __u64 pkt_len,
+                                   pid_t pid) {
+  struct ethhdr *eth = data;
+
+  // validate Ethernet size
+  if ((void *)eth + sizeof(*eth) > data_end) {
+    return;
+  }
+
+  // initialize key
+  statkey key;
+  __builtin_memset(&key, 0, sizeof(key));
+
+  // populate PID (may be 0)
+  key.pid = pid;
+
+  // process only IPv4 and IPv6
+  switch (bpf_ntohs(eth->h_proto)) {
+  case ETH_P_IP: {
+    struct iphdr *ip4 = (void *)eth + sizeof(*eth);
+
+    if (process_ip4(ip4, data_end, &key) == NOK)
+      return;
+  }
+
+  break;
+  case ETH_P_IPV6: {
+    struct ipv6hdr *ip6 = (void *)eth + sizeof(*eth);
+
+    if (process_ip6(ip6, data_end, &key) == NOK)
+      return;
+  }
+
+  break;
+  default:
+    return;
+  }
+
+  // lookup value in hash
+  statvalue *val = (statvalue *)bpf_map_lookup_elem(&pkt_count, &key);
+  if (val) {
+    // atomic XADD, doesn't need bpf_spin_lock()
+    __sync_fetch_and_add(&val->packets, 1);
+    __sync_fetch_and_add(&val->bytes, pkt_len);
+  } else {
+    statvalue initval = {.packets = 1, .bytes = pkt_len};
+
+    bpf_map_update_elem(&pkt_count, &key, &initval, BPF_NOEXIST);
+  }
+}
+
+/**
  * Process the packet for traffic control and take necessary actions.
  *
  * @param skb pointer to the packet buffer
@@ -257,6 +322,24 @@ static inline void tc_process_packet(struct __sk_buff *skb) {
   void *data_end = (void *)(long)skb->data_end;
 
   process_eth(data, data_end, skb->len);
+}
+
+/**
+ * Process the packet for traffic control and take necessary actions, with
+ * the process ID included in the key.
+ *
+ * @param skb pointer to the packet buffer
+ * @param pid process ID to be included in the key
+ *
+ * @return none
+ *
+ * @throws none
+ */
+static inline void tc_process_packet_pid(struct __sk_buff *skb, pid_t pid) {
+  void *data = (void *)(long)skb->data;
+  void *data_end = (void *)(long)skb->data_end;
+
+  process_eth_pid(data, data_end, skb->len, pid);
 }
 
 /**
@@ -275,8 +358,14 @@ static inline void xdp_process_packet(struct xdp_md *xdp) {
   process_eth(data, data_end, data_end - data);
 }
 
-/*
- * Main eBPF XDP program
+/**
+ * Process the packet for XDP and take necessary actions.
+ *
+ * @param xdp pointer to the XDP context
+ *
+ * @return XDP_PASS
+ *
+ * @throws none
  */
 SEC("xdp")
 int xdp_count_packets(struct xdp_md *xdp) {
@@ -285,12 +374,38 @@ int xdp_count_packets(struct xdp_md *xdp) {
   return XDP_PASS;
 }
 
-/*
- * Main eBPF TC program
+/**
+ * Process the packet for TC (Traffic Control) and take necessary actions.
+ *
+ * @param skb pointer to the skb
+ *
+ * @return TC_ACT_UNSPEC
+ *
+ * @throws none
  */
 SEC("tc")
 int tc_count_packets(struct __sk_buff *skb) {
   tc_process_packet(skb);
+
+  return TC_ACT_UNSPEC;
+}
+
+/**
+ * Process the packet for TC (Traffic Control) and take necessary actions. This
+ * variant of the function also gets the current PID and passes it to the
+ * `tc_process_packet` function.
+ *
+ * @param skb pointer to the skb
+ *
+ * @return TC_ACT_UNSPEC
+ *
+ * @throws none
+ */
+SEC("tc")
+int tc_count_packets_pid(struct __sk_buff *skb) {
+  // get PID where possible
+  pid_t pid = bpf_get_current_pid_tgid() & 0xFFFFFFFF;
+  tc_process_packet_pid(skb, pid);
 
   return TC_ACT_UNSPEC;
 }

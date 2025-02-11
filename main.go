@@ -37,6 +37,7 @@ import (
 	"github.com/cilium/ebpf/features"
 	"github.com/cilium/ebpf/link"
 	"github.com/cilium/ebpf/rlimit"
+	"github.com/hako/durafmt"
 )
 
 var (
@@ -74,10 +75,16 @@ func main() {
 		log.Fatalf("Error getting interface %q: %v", *ifname, err) //nolint:gocritic
 	}
 
+	if *useXDP && *usePID {
+		log.Printf("In XDP mode, PID information is not available. Disabling PID tracking.")
+		*usePID = false
+	}
+
 	var linkIngress, linkEgress link.Link
 
-	//nolint:nestif
-	if *useXDP {
+	switch {
+	// XDP
+	case *useXDP:
 		err = features.HaveProgramType(ebpf.XDP)
 		if errors.Is(err, ebpf.ErrNotSupported) {
 			log.Fatalf("XDP not supported on this kernel")
@@ -98,7 +105,39 @@ func main() {
 		if err != nil {
 			log.Fatalf("Error attaching %q XDP ingress: %v", *ifname, err)
 		}
-	} else {
+	// TC w/ PID tracking
+	case !*useXDP && *usePID:
+		err = features.HaveProgramType(ebpf.SchedACT)
+		if errors.Is(err, ebpf.ErrNotSupported) {
+			log.Fatalf("SchedACT not supported on this kernel")
+		}
+
+		if err != nil {
+			log.Fatalf("Error checking SchedACT support: %v", err)
+		}
+
+		// NOTE: BPF_TCX_INGRESS and BPF_TCX_EGRESS require v6.6 kernel
+		// Attach count_packets_pid to the network interface ingress, uses BPF_TCX_INGRESS
+		linkIngress, err = link.AttachTCX(link.TCXOptions{
+			Program:   objs.TcCountPacketsPid,
+			Attach:    ebpf.AttachTCXIngress,
+			Interface: iface.Index,
+		})
+		if err != nil {
+			log.Fatalf("Error attaching %q TCX ingress: %v", *ifname, err)
+		}
+
+		// Attach count_packets_pid to the network interface egresss, uses BPF_TCX_EGRESS
+		linkEgress, err = link.AttachTCX(link.TCXOptions{
+			Program:   objs.TcCountPacketsPid,
+			Attach:    ebpf.AttachTCXEgress,
+			Interface: iface.Index,
+		})
+		if err != nil {
+			log.Fatalf("Error attaching %q TCX egress: %v", *ifname, err)
+		}
+	// TC w/o PID tracking
+	default:
 		err = features.HaveProgramType(ebpf.SchedACT)
 		if errors.Is(err, ebpf.ErrNotSupported) {
 			log.Fatalf("SchedACT not supported on this kernel")
@@ -132,19 +171,25 @@ func main() {
 
 	defer func() {
 		if linkIngress != nil {
-			linkIngress.Close()
+			_ = linkIngress.Close()
 		}
 
 		if linkEgress != nil {
-			linkEgress.Close()
+			_ = linkEgress.Close()
 		}
 	}()
 
 	if *useXDP {
-		log.Printf("Starting on interface %q using XDP (eXpress Data Path) eBPF mode", *ifname)
+		log.Printf("Starting on interface %q using XDP (eXpress Data Path) eBPF mode, listening for %v",
+			*ifname, durafmt.Parse(*timeout))
 		log.Printf("Due to XDP mode, egress statistics are not available. Upon program exit, interface reset is possible.")
 	} else {
-		log.Printf("Starting on interface %q using TC (Traffic Control) eBPF mode", *ifname)
+		log.Printf("Starting on interface %q using TC (Traffic Control) eBPF mode, listening for %v",
+			*ifname, durafmt.Parse(*timeout))
+
+		if *usePID {
+			log.Printf("PID information will be displayed in the output where available.")
+		}
 	}
 
 	c1, cancel := context.WithCancel(context.Background())
@@ -157,7 +202,7 @@ func main() {
 
 	go func() {
 		s := <-signalCh
-		fmt.Fprintf(os.Stderr, "Received %v signal, trying to exit...\n", s)
+		_, _ = fmt.Fprintf(os.Stderr, "Received %v signal, trying to exit...\n", s)
 		cancel()
 	}()
 

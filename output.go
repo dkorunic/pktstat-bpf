@@ -65,6 +65,7 @@ func processMap(m *ebpf.Map, start time.Time) ([]statEntry, error) {
 			Bytes:   val.Bytes,
 			Packets: val.Packets,
 			Bitrate: 8 * float64(val.Bytes) / dur,
+			Pid:     key.Pid,
 		})
 	}
 
@@ -107,8 +108,12 @@ func outputPlain(m []statEntry) {
 	var sb strings.Builder
 
 	for _, v := range m {
-		sb.WriteString(fmt.Sprintf("bitrate: %v, packets: %d, bytes: %d, proto: %v, src: %v:%v, dst: %v:%v\n",
+		sb.WriteString(fmt.Sprintf("bitrate: %v, packets: %d, bytes: %d, proto: %v, src: %v:%v, dst: %v:%v",
 			formatBitrate(v.Bitrate), v.Packets, v.Bytes, v.Proto, v.SrcIP, v.SrcPort, v.DstIP, v.DstPort))
+		if *usePID {
+			sb.WriteString(fmt.Sprintf(", pid: %d", v.Pid))
+		}
+		sb.WriteString("\n")
 	}
 
 	fmt.Printf("%v", sb.String())

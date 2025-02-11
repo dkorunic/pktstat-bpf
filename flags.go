@@ -39,10 +39,10 @@ const (
 )
 
 var (
-	ifname, xdpMode                   *string
-	jsonOutput, version, help, useXDP *bool
-	timeout                           *time.Duration
-	xdpAttachFlags                    link.XDPAttachFlags
+	ifname, xdpMode                           *string
+	jsonOutput, version, help, useXDP, usePID *bool
+	timeout                                   *time.Duration
+	xdpAttachFlags                            link.XDPAttachFlags
 )
 
 func parseFags() {
@@ -51,6 +51,7 @@ func parseFags() {
 	help = fs.Bool('?', "help", "display help")
 	jsonOutput = fs.Bool('j', "json", "if true, output in JSON format")
 	useXDP = fs.Bool('x', "xdp", "if true, use XDP instead of TC (this disables egress statistics)")
+	usePID = fs.Bool('p', "pid", "if true, use process ID for packets (works with TC only)")
 
 	version = fs.BoolLong("version", "display program version")
 
