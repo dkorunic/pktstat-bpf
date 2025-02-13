@@ -110,7 +110,7 @@ func outputPlain(m []statEntry) {
 	for _, v := range m {
 		sb.WriteString(fmt.Sprintf("bitrate: %v, packets: %d, bytes: %d, proto: %v, src: %v:%v, dst: %v:%v",
 			formatBitrate(v.Bitrate), v.Packets, v.Bytes, v.Proto, v.SrcIP, v.SrcPort, v.DstIP, v.DstPort))
-		if *usePID {
+		if *useKprobes {
 			sb.WriteString(fmt.Sprintf(", pid: %d", v.Pid))
 		}
 		sb.WriteString("\n")

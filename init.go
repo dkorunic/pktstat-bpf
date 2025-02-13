@@ -21,5 +21,19 @@
 
 package main
 
-//go:generate go run github.com/cilium/ebpf/cmd/bpf2go -target amd64 counter counter.c -- -I./contrib/amd64
-//go:generate go run github.com/cilium/ebpf/cmd/bpf2go -target arm64 counter counter.c -- -I./contrib/arm64
+import "strings"
+
+var (
+	GitTag    = ""
+	GitCommit = ""
+	GitDirty  = ""
+	BuildTime = ""
+)
+
+//nolint:gochecknoinits
+func init() {
+	GitTag = strings.TrimSpace(GitTag)
+	GitCommit = strings.TrimSpace(GitCommit)
+	GitDirty = strings.TrimSpace(GitDirty)
+	BuildTime = strings.TrimSpace(BuildTime)
+}

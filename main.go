@@ -29,7 +29,6 @@ import (
 	"net"
 	"os"
 	"os/signal"
-	"strings"
 	"syscall"
 	"time"
 
@@ -40,19 +39,9 @@ import (
 	"github.com/hako/durafmt"
 )
 
-var (
-	GitTag    = ""
-	GitCommit = ""
-	GitDirty  = ""
-	BuildTime = ""
-)
-
-//nolint:gochecknoinits
-func init() {
-	GitTag = strings.TrimSpace(GitTag)
-	GitCommit = strings.TrimSpace(GitCommit)
-	GitDirty = strings.TrimSpace(GitDirty)
-	BuildTime = strings.TrimSpace(BuildTime)
+type kprobeHook struct {
+	prog   *ebpf.Program
+	kprobe string
 }
 
 func main() {
@@ -68,128 +57,38 @@ func main() {
 	if err := loadCounterObjects(&objs, nil); err != nil {
 		log.Fatalf("Error loading eBPF objects: %v", err)
 	}
-	defer objs.Close()
+	defer func() { _ = objs.Close() }()
 
 	iface, err := net.InterfaceByName(*ifname)
 	if err != nil {
 		log.Fatalf("Error getting interface %q: %v", *ifname, err) //nolint:gocritic
 	}
 
-	if *useXDP && *usePID {
-		log.Printf("In XDP mode, PID information is not available. Disabling PID tracking.")
-		*usePID = false
-	}
-
-	var linkIngress, linkEgress link.Link
-
-	switch {
-	// XDP
-	case *useXDP:
-		err = features.HaveProgramType(ebpf.XDP)
-		if errors.Is(err, ebpf.ErrNotSupported) {
-			log.Fatalf("XDP not supported on this kernel")
-		}
-
-		if err != nil {
-			log.Fatalf("Error checking XDP support: %v", err)
-		}
-
-		// Attach count_packets to the network interface ingress, uses BPF_XDP
-		// NOTE: no egress support yet for BPF_XDP path
-		// NOTE: BPF_LINK_CREATE for XDP requires v5.9 kernel, but might work with older RHEL kernels
-		linkIngress, err = link.AttachXDP(link.XDPOptions{
-			Program:   objs.XdpCountPackets,
-			Interface: iface.Index,
-			Flags:     xdpAttachFlags,
-		})
-		if err != nil {
-			log.Fatalf("Error attaching %q XDP ingress: %v", *ifname, err)
-		}
-	// TC w/ PID tracking
-	case !*useXDP && *usePID:
-		err = features.HaveProgramType(ebpf.SchedACT)
-		if errors.Is(err, ebpf.ErrNotSupported) {
-			log.Fatalf("SchedACT not supported on this kernel")
-		}
-
-		if err != nil {
-			log.Fatalf("Error checking SchedACT support: %v", err)
-		}
-
-		// NOTE: BPF_TCX_INGRESS and BPF_TCX_EGRESS require v6.6 kernel
-		// Attach count_packets_pid to the network interface ingress, uses BPF_TCX_INGRESS
-		linkIngress, err = link.AttachTCX(link.TCXOptions{
-			Program:   objs.TcCountPacketsPid,
-			Attach:    ebpf.AttachTCXIngress,
-			Interface: iface.Index,
-		})
-		if err != nil {
-			log.Fatalf("Error attaching %q TCX ingress: %v", *ifname, err)
-		}
-
-		// Attach count_packets_pid to the network interface egresss, uses BPF_TCX_EGRESS
-		linkEgress, err = link.AttachTCX(link.TCXOptions{
-			Program:   objs.TcCountPacketsPid,
-			Attach:    ebpf.AttachTCXEgress,
-			Interface: iface.Index,
-		})
-		if err != nil {
-			log.Fatalf("Error attaching %q TCX egress: %v", *ifname, err)
-		}
-	// TC w/o PID tracking
-	default:
-		err = features.HaveProgramType(ebpf.SchedACT)
-		if errors.Is(err, ebpf.ErrNotSupported) {
-			log.Fatalf("SchedACT not supported on this kernel")
-		}
-
-		if err != nil {
-			log.Fatalf("Error checking SchedACT support: %v", err)
-		}
-
-		// NOTE: BPF_TCX_INGRESS and BPF_TCX_EGRESS require v6.6 kernel
-		// Attach count_packets to the network interface ingress, uses BPF_TCX_INGRESS
-		linkIngress, err = link.AttachTCX(link.TCXOptions{
-			Program:   objs.TcCountPackets,
-			Attach:    ebpf.AttachTCXIngress,
-			Interface: iface.Index,
-		})
-		if err != nil {
-			log.Fatalf("Error attaching %q TCX ingress: %v", *ifname, err)
-		}
-
-		// Attach count_packets to the network interface egresss, uses BPF_TCX_EGRESS
-		linkEgress, err = link.AttachTCX(link.TCXOptions{
-			Program:   objs.TcCountPackets,
-			Attach:    ebpf.AttachTCXEgress,
-			Interface: iface.Index,
-		})
-		if err != nil {
-			log.Fatalf("Error attaching %q TCX egress: %v", *ifname, err)
-		}
-	}
+	var links []link.Link
 
 	defer func() {
-		if linkIngress != nil {
-			_ = linkIngress.Close()
-		}
-
-		if linkEgress != nil {
-			_ = linkEgress.Close()
+		for _, l := range links {
+			_ = l.Close()
 		}
 	}()
 
-	if *useXDP {
-		log.Printf("Starting on interface %q using XDP (eXpress Data Path) eBPF mode, listening for %v",
-			*ifname, durafmt.Parse(*timeout))
-		log.Printf("Due to XDP mode, egress statistics are not available. Upon program exit, interface reset is possible.")
-	} else {
-		log.Printf("Starting on interface %q using TC (Traffic Control) eBPF mode, listening for %v",
-			*ifname, durafmt.Parse(*timeout))
-
-		if *usePID {
-			log.Printf("PID information will be displayed in the output where available.")
+	switch {
+	// Kprobes w/ PID tracking
+	case *useKprobes:
+		hooks := []kprobeHook{
+			{kprobe: "tcp_sendmsg", prog: objs.TcpSendmsg},
+			{kprobe: "tcp_cleanup_rbuf", prog: objs.TcpCleanupRbuf},
+			{kprobe: "ip_send_skb", prog: objs.IpSendSkb},
+			{kprobe: "skb_consume_udp", prog: objs.SkbConsumeUdp},
 		}
+
+		links = startKprobes(hooks, links)
+	// XDP
+	case *useXDP:
+		links = startXDP(objs, iface, links)
+	// TC
+	default:
+		startTC(objs, iface, links)
 	}
 
 	c1, cancel := context.WithCancel(context.Background())
@@ -225,4 +124,163 @@ func main() {
 	} else {
 		outputPlain(m)
 	}
+}
+
+// startKprobes attaches a series of eBPF programs to kernel functions using Kprobes.
+//
+// This function iterates over a slice of kprobeHook structs, each containing a kernel function
+// name (kprobe) and an associated eBPF program. It attempts to attach each eBPF program to its
+// respective kernel function using Kprobes. If a Kprobe cannot be attached, an error message
+// is logged, but the function continues with the next Kprobe.
+//
+// The function first checks if Kprobes are supported by the current kernel. If not supported,
+// it logs a fatal error and terminates the program.
+//
+// Parameters:
+//
+//	hooks []kprobeHook: A slice of kprobeHook structs, where each struct contains a kernel
+//	function name and an associated eBPF program.
+//
+//	links []link.Link: A slice of link.Link objects to which successfully attached Kprobes
+//	are appended.
+//
+// Returns:
+//
+//	[]link.Link: The updated slice of link.Link objects, including any newly attached Kprobes.
+func startKprobes(hooks []kprobeHook, links []link.Link) []link.Link {
+	var l link.Link
+
+	err := features.HaveProgramType(ebpf.Kprobe)
+	if errors.Is(err, ebpf.ErrNotSupported) {
+		log.Fatalf("Kprobes are not supported on this kernel")
+	}
+
+	if err != nil {
+		log.Fatalf("Error checking Kprobes support: %v", err)
+	}
+
+	for _, kp := range hooks {
+		l, err = link.Kprobe(kp.kprobe, kp.prog, nil)
+		if err != nil {
+			log.Printf("Unable to attach %q Kprobe: %v", kp.kprobe, err)
+
+			continue
+		}
+
+		links = append(links, l)
+	}
+
+	log.Printf("Starting on interface %q using Kprobes mode w/ PID tracking, listening for %v",
+		*ifname, durafmt.Parse(*timeout))
+
+	return links
+}
+
+// startXDP attaches an eBPF XDP program to a network interface for packet counting.
+//
+// This function checks if the XDP program type is supported by the kernel. If supported,
+// it attaches the XDP program to the specified network interface's ingress path. Note that
+// egress support is not available for XDP, and the function requires at least a v5.9 kernel
+// for BPF_LINK_CREATE, though it might work with older RHEL kernels.
+//
+// Parameters:
+//
+//	objs counterObjects: Contains the eBPF programs, including the XDP program to be attached.
+//	iface *net.Interface: The network interface to which the XDP program should be attached.
+//	links []link.Link: A slice of existing link.Link objects to which the newly attached XDP link
+//	                    will be appended.
+//
+// Returns:
+//
+//	[]link.Link: The updated slice of link.Link objects, now including the newly attached XDP link.
+func startXDP(objs counterObjects, iface *net.Interface, links []link.Link) []link.Link {
+	var l link.Link
+
+	err := features.HaveProgramType(ebpf.XDP)
+	if errors.Is(err, ebpf.ErrNotSupported) {
+		log.Fatalf("XDP not supported on this kernel")
+	}
+
+	if err != nil {
+		log.Fatalf("Error checking XDP support: %v", err)
+	}
+
+	// Attach count_packets to the network interface ingress, uses BPF_XDP
+	// NOTE: no egress support yet for BPF_XDP path
+	// NOTE: BPF_LINK_CREATE for XDP requires v5.9 kernel, but might work with older RHEL kernels
+	l, err = link.AttachXDP(link.XDPOptions{
+		Program:   objs.XdpCountPackets,
+		Interface: iface.Index,
+		Flags:     xdpAttachFlags,
+	})
+	if err != nil {
+		log.Fatalf("Error attaching %q XDP ingress: %v", *ifname, err)
+	}
+
+	links = append(links, l)
+
+	log.Printf("Starting on interface %q using XDP (eXpress Data Path) eBPF mode, listening for %v",
+		*ifname, durafmt.Parse(*timeout))
+	log.Printf("Due to XDP mode, egress statistics are not available. Upon program exit, interface reset is possible.")
+	return links
+}
+
+// startTC attaches an eBPF program to a network interface for packet counting using
+// the Traffic Control (TC) eBPF mode. The function checks if the TC eBPF mode is
+// supported by the kernel. If supported, it attaches the program to both the ingress
+// and egress paths of the specified network interface. Note that TC eBPF mode requires
+// at least a v6.6 kernel.
+//
+// Parameters:
+//
+//	objs counterObjects: Contains the eBPF programs, including the TC program to be
+//	                      attached.
+//	iface *net.Interface: The network interface to which the TC program should be
+//	                      attached.
+//	links []link.Link: A slice of existing link.Link objects to which the newly
+//	                    attached TC links will be appended.
+//
+// Returns:
+//
+//	[]link.Link: The updated slice of link.Link objects, now including the newly
+//	             attached TC links.
+func startTC(objs counterObjects, iface *net.Interface, links []link.Link) {
+	var l link.Link
+
+	err := features.HaveProgramType(ebpf.SchedACT)
+	if errors.Is(err, ebpf.ErrNotSupported) {
+		log.Fatalf("SchedACT not supported on this kernel")
+	}
+
+	if err != nil {
+		log.Fatalf("Error checking SchedACT support: %v", err)
+	}
+
+	// NOTE: BPF_TCX_INGRESS and BPF_TCX_EGRESS require v6.6 kernel
+	// Attach count_packets to the network interface ingress, uses BPF_TCX_INGRESS
+	l, err = link.AttachTCX(link.TCXOptions{
+		Program:   objs.TcCountPackets,
+		Attach:    ebpf.AttachTCXIngress,
+		Interface: iface.Index,
+	})
+	if err != nil {
+		log.Fatalf("Error attaching %q TCX ingress: %v", *ifname, err)
+	}
+
+	links = append(links, l)
+
+	// Attach count_packets to the network interface egresss, uses BPF_TCX_EGRESS
+	l, err = link.AttachTCX(link.TCXOptions{
+		Program:   objs.TcCountPackets,
+		Attach:    ebpf.AttachTCXEgress,
+		Interface: iface.Index,
+	})
+	if err != nil {
+		log.Fatalf("Error attaching %q TCX egress: %v", *ifname, err)
+	}
+
+	links = append(links, l)
+
+	log.Printf("Starting on interface %q using TC (Traffic Control) eBPF mode, listening for %v",
+		*ifname, durafmt.Parse(*timeout))
 }

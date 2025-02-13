@@ -33,14 +33,15 @@ In case of XDP, not all NIC drivers support **Native XDP** (XDP program is loade
 
 The following table maps features, requirements and expected performance for described modes:
 
-| Capture type                                        | Ingress | Egress | Performance    | Kernel required | SmartNIC required |
-| --------------------------------------------------- | ------- | ------ | -------------- | --------------- | ----------------- |
-| Generic [PCAP](https://github.com/dkorunic/pktstat) | Yes     | Yes    | Low            | Any             | No                |
-| [AF_PACKET](https://github.com/dkorunic/pktstat)    | Yes     | Yes    | Medium         | v2.2            | No                |
-| TC                                                  | Yes     | Yes    | **High**       | v6.6            | No                |
-| XDP Generic                                         | Yes     | **No** | **High**       | v5.9            | No                |
-| XDP Native                                          | Yes     | **No** | **Very high**  | v5.9            | No                |
-| XDP Offloaded                                       | Yes     | **No** | **Wire speed** | v5.9            | **Yes**           |
+| Capture type                                        | Ingress | Egress | Performance    | Process tracking | Kernel required | SmartNIC required |
+| --------------------------------------------------- | ------- | ------ | -------------- | ---------------- | --------------- | ----------------- |
+| Generic [PCAP](https://github.com/dkorunic/pktstat) | Yes     | Yes    | Low            | No               | Any             | No                |
+| [AF_PACKET](https://github.com/dkorunic/pktstat)    | Yes     | Yes    | Medium         | No               | v2.2            | No                |
+| Kprobes                                             | Yes     | Yes    | Medium+        | **Yes**              | v2.6            | No                |
+| TC                                                  | Yes     | Yes    | **High**       | No               | v6.6            | No                |
+| XDP Generic                                         | Yes     | **No** | **High**       | No               | v5.9            | No                |
+| XDP Native                                          | Yes     | **No** | **Very high**  | No               | v5.9            | No                |
+| XDP Offloaded                                       | Yes     | **No** | **Wire speed** | No               | v5.9            | **Yes**           |
 
 A list of XDP compatible drivers follows (and it is not necessarily up-to-date):
 
@@ -57,7 +58,7 @@ FLAGS
   -?, --help               display help
   -j, --json               if true, output in JSON format
   -x, --xdp                if true, use XDP instead of TC (this disables egress statistics)
-  -p, --pid                if true, use process ID for packets (works with TC only)
+  -k, --kprobes            if true, use kprobes for per-proces TCP/UDP statistics
       --version            display program version
   -i, --iface STRING       interface to read from (default: eth0)
       --xdp_mode STRING    XDP attach mode (auto, generic, native or offload; native and offload require NIC driver support) (default: auto)
@@ -74,7 +75,7 @@ With `--xdp` program will switch from TC eBPF mode to XDP eBPF mode, working in 
 
 Additionally it is possible to change XDP attach mode with `--xdp_mode` from `auto` (best-effort between native and generic) to `native` or `offload`, for NIC drivers that support XDP or even NICs that have hardware XDP support.
 
-With `--pid` it is also possible to enable process ID (PID) tracking. If packet processing is triggered by user-space process, we are able to display process ID, but in case the packet is processed by kernel (forwarding, routing, kernel-generated packets) PID will be zero. Additionally, PID tracking works only in TC eBPF mode.
+With `--kprobes` program will switch to Kprobe mode and track TCP and UDP traffic per process. Performance will be even more degraded compared to TC and XDP mode, but all per-PID traffic will be visible, inside of all Cgroups, containers, K8s pods etc.
 
 ## Star History
 
