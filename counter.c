@@ -469,6 +469,20 @@ static inline void process_udp_recv(struct sk_buff *skb, statkey *key,
   key->pid = pid;
 }
 
+/**
+ * Process an ICMPv4 packet and populate the key with the relevant information.
+ *
+ * @param skb pointer to the socket buffer containing the ICMPv4 packet
+ * @param key pointer to the statkey structure to be populated
+ * @param pid process ID associated with the packet
+ *
+ * This function extracts source and destination IP addresses and ICMP type
+ * and code from the ICMPv4 packet, taking into account the IPv4 header. It
+ * stores these details in the provided statkey structure, along with the
+ * protocol type set to ICMPv4 and the associated process ID.
+ *
+ * @throws none
+ */
 static inline size_t process_icmp4(struct sk_buff *skb, statkey *key,
                                    pid_t pid) {
   struct icmphdr *icmphdr =
@@ -500,6 +514,23 @@ static inline size_t process_icmp4(struct sk_buff *skb, statkey *key,
 
   return msglen;
 }
+
+/**
+ * Process an ICMPv6 packet and populate the key with the relevant information.
+ *
+ * @param skb pointer to the socket buffer containing the ICMPv6 packet
+ * @param key pointer to the statkey structure to be populated
+ * @param pid process ID associated with the packet
+ *
+ * This function extracts source and destination IP addresses and ICMPv6 type
+ * and code from the ICMPv6 packet, taking into account the IPv6 header. It
+ * stores these details in the provided statkey structure, along with the
+ * protocol type set to ICMPv6 and the associated process ID. It also returns
+ * the length of the ICMPv6 message payload.
+ *
+ * @return the length of the ICMPv6 message payload
+ * @throws none
+ */
 
 static inline size_t process_icmp6(struct sk_buff *skb, statkey *key,
                                    pid_t pid) {
