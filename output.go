@@ -22,6 +22,7 @@
 package main
 
 import (
+	"bytes"
 	"fmt"
 	"sort"
 	"strings"
@@ -32,11 +33,12 @@ import (
 )
 
 const (
-	Bps  float64 = 1.0
-	Kbps         = 1000 * Bps
-	Mbps         = 1000 * Kbps
-	Gbps         = 1000 * Mbps
-	Tbps         = 1000 * Gbps
+	Bps        float64 = 1.0
+	Kbps               = 1000 * Bps
+	Mbps               = 1000 * Kbps
+	Gbps               = 1000 * Mbps
+	Tbps               = 1000 * Gbps
+	KernelComm         = "kernel"
 )
 
 // processMap generates statEntry objects from an ebpf.Map using the provided start time.
@@ -66,7 +68,7 @@ func processMap(m *ebpf.Map, start time.Time) ([]statEntry, error) {
 			Packets: val.Packets,
 			Bitrate: 8 * float64(val.Bytes) / dur,
 			Pid:     key.Pid,
-			Comm:    byte2String(key.Comm[:]),
+			Comm:    comm2String(key.Comm[:]),
 		})
 	}
 
@@ -140,16 +142,23 @@ func outputJSON(m []statEntry) {
 	fmt.Printf("%v\n", string(out))
 }
 
-// byte2String converts a slice of int8 to a string.
+// comm2String converts a byte slice to a string, trimming any null bytes.
 //
-// It takes a slice of int8 as a parameter, creates a new slice of byte of the same length,
-// copies the values of the int8 slice to the byte slice, and converts the byte slice to a string.
-// The resulting string is then returned.
-func byte2String(bs []int8) string {
+// It takes a byte slice as its parameter and returns a string.
+// If the byte slice is empty, the function returns the string "kernel".
+// Otherwise, it creates a new byte slice, copies the input byte slice into it,
+// trims any null bytes from the end of the slice, and returns the result as a string.
+func comm2String(bs []int8) string {
+	if len(bs) == 0 {
+		return KernelComm
+	}
+
 	b := make([]byte, len(bs))
 	for i, v := range bs {
 		b[i] = byte(v)
 	}
+
+	b = bytes.Trim(b, "\x00")
 
 	return string(b)
 }
