@@ -33,12 +33,11 @@ import (
 )
 
 const (
-	Bps        float64 = 1.0
-	Kbps               = 1000 * Bps
-	Mbps               = 1000 * Kbps
-	Gbps               = 1000 * Mbps
-	Tbps               = 1000 * Gbps
-	KernelComm         = "[kernel]"
+	Bps  float64 = 1.0
+	Kbps         = 1000 * Bps
+	Mbps         = 1000 * Kbps
+	Gbps         = 1000 * Mbps
+	Tbps         = 1000 * Gbps
 )
 
 // processMap generates statEntry objects from an ebpf.Map using the provided start time.
@@ -121,7 +120,11 @@ func outputPlain(m []statEntry) {
 		}
 
 		if *useKProbes {
-			sb.WriteString(fmt.Sprintf(", pid: %d, comm: %v", v.Pid, v.Comm))
+			sb.WriteString(fmt.Sprintf(", pid: %d", v.Pid))
+
+			if v.Comm != "" {
+				sb.WriteString(fmt.Sprintf(", comm: %v", v.Comm))
+			}
 		}
 
 		sb.WriteString("\n")
@@ -156,10 +159,6 @@ func comm2String(bs []int8) string {
 
 	// trim excess NULLs
 	b = bytes.Trim(b, "\x00")
-
-	if len(b) == 0 {
-		return KernelComm
-	}
 
 	return string(b)
 }
