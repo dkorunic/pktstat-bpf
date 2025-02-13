@@ -109,20 +109,19 @@ func outputPlain(m []statEntry) {
 	var sb strings.Builder
 
 	for _, v := range m {
-		if *useKprobes {
-			switch v.Proto {
-			case "ICMPv4", "IPv6-ICMP":
-				sb.WriteString(fmt.Sprintf("bitrate: %v, packets: %d, bytes: %d, proto: %v, src: %v, dst: %v, type: %d, code: %d",
-					formatBitrate(v.Bitrate), v.Packets, v.Bytes, v.Proto, v.SrcIP, v.DstIP, v.SrcPort, v.DstPort))
-			default:
-				sb.WriteString(fmt.Sprintf("bitrate: %v, packets: %d, bytes: %d, proto: %v, src: %v:%d, dst: %v:%d",
-					formatBitrate(v.Bitrate), v.Packets, v.Bytes, v.Proto, v.SrcIP, v.SrcPort, v.DstIP, v.DstPort))
-			}
-			sb.WriteString(fmt.Sprintf(", pid: %d, comm: %v", v.Pid, v.Comm))
-		} else {
+		switch v.Proto {
+		case "ICMPv4", "IPv6-ICMP":
+			sb.WriteString(fmt.Sprintf("bitrate: %v, packets: %d, bytes: %d, proto: %v, src: %v, dst: %v, type: %d, code: %d",
+				formatBitrate(v.Bitrate), v.Packets, v.Bytes, v.Proto, v.SrcIP, v.DstIP, v.SrcPort, v.DstPort))
+		default:
 			sb.WriteString(fmt.Sprintf("bitrate: %v, packets: %d, bytes: %d, proto: %v, src: %v:%d, dst: %v:%d",
 				formatBitrate(v.Bitrate), v.Packets, v.Bytes, v.Proto, v.SrcIP, v.SrcPort, v.DstIP, v.DstPort))
 		}
+
+		if *useKprobes {
+			sb.WriteString(fmt.Sprintf(", pid: %d, comm: %v", v.Pid, v.Comm))
+		}
+
 		sb.WriteString("\n")
 	}
 

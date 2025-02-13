@@ -40,6 +40,7 @@
 #define AF_INET 2
 #define AF_INET6 10
 #define TASK_COMM_LEN 16
+#define IPPROTO_ICMPV6 58
 
 #define OK 1
 #define NOK 0
@@ -112,9 +113,9 @@ static inline int process_ip4(struct iphdr *ip4, void *data_end, statkey *key) {
 
     key->src_port = bpf_ntohs(tcp->source);
     key->dst_port = bpf_ntohs(tcp->dest);
-  }
 
-  break;
+    break;
+  }
   case IPPROTO_UDP: {
     struct udphdr *udp = (void *)ip4 + sizeof(*ip4);
 
@@ -125,9 +126,24 @@ static inline int process_ip4(struct iphdr *ip4, void *data_end, statkey *key) {
 
     key->src_port = bpf_ntohs(udp->source);
     key->dst_port = bpf_ntohs(udp->dest);
-  }
 
-  break;
+    break;
+  }
+  case IPPROTO_ICMP: {
+    struct icmphdr *icmp = (void *)ip4 + sizeof(*ip4);
+
+    // validate ICMP size
+    if ((void *)icmp + sizeof(*icmp) > data_end) {
+      return NOK;
+    }
+
+    // store ICMP type in src port
+    key->src_port = icmp->type;
+    // store ICMP code in dst port
+    key->dst_port = icmp->code;
+
+    break;
+  }
   }
 
   return OK;
@@ -167,9 +183,9 @@ static inline int process_ip6(struct ipv6hdr *ip6, void *data_end,
 
     key->src_port = bpf_ntohs(tcp->source);
     key->dst_port = bpf_ntohs(tcp->dest);
-  }
 
-  break;
+    break;
+  }
   case IPPROTO_UDP: {
     struct udphdr *udp = (void *)ip6 + sizeof(*ip6);
 
@@ -180,17 +196,32 @@ static inline int process_ip6(struct ipv6hdr *ip6, void *data_end,
 
     key->src_port = bpf_ntohs(udp->source);
     key->dst_port = bpf_ntohs(udp->dest);
-  }
 
-  break;
+    break;
+  }
+  case IPPROTO_ICMPV6: {
+    struct icmp6hdr *icmp = (void *)ip6 + sizeof(*ip6);
+
+    // validate ICMPv6 size
+    if ((void *)icmp + sizeof(*icmp) > data_end) {
+      return NOK;
+    }
+
+    // store ICMP type in src port
+    key->src_port = icmp->icmp6_type;
+    // store ICMP code in dst port
+    key->dst_port = icmp->icmp6_code;
+
+    break;
+  }
   }
 
   return OK;
 }
 
 /**
- * Process the Ethernet header and extract relevant information to populate the
- * key.
+ * Process the Ethernet header and extract relevant information to populate
+ * the key.
  *
  * @param data pointer to the start of the Ethernet header
  * @param data_end pointer to the end of the packet data
@@ -217,19 +248,21 @@ static inline void process_eth(void *data, void *data_end, __u64 pkt_len) {
   case ETH_P_IP: {
     struct iphdr *ip4 = (void *)eth + sizeof(*eth);
 
-    if (process_ip4(ip4, data_end, &key) == NOK)
+    if (process_ip4(ip4, data_end, &key) == NOK) {
       return;
-  }
+    }
 
-  break;
+    break;
+  }
   case ETH_P_IPV6: {
     struct ipv6hdr *ip6 = (void *)eth + sizeof(*eth);
 
-    if (process_ip6(ip6, data_end, &key) == NOK)
+    if (process_ip6(ip6, data_end, &key) == NOK) {
       return;
-  }
+    }
 
-  break;
+    break;
+  }
   default:
     return;
   }
@@ -319,17 +352,17 @@ int tc_count_packets(struct __sk_buff *skb) {
 }
 
 /**
- * Process TCP socket information and populate the key structure with extracted
- * data.
+ * Process TCP socket information and populate the key structure with
+ * extracted data.
  *
  * @param sk pointer to the socket structure
  * @param key pointer to the statkey structure to be populated
  * @param pid process ID associated with the socket
  *
  * This function reads the socket's address family and based on whether it is
- * IPv4 or IPv6, it extracts the source and destination IP addresses and ports.
- * It also sets the protocol to TCP and assigns the provided process ID to the
- * key.
+ * IPv4 or IPv6, it extracts the source and destination IP addresses and
+ * ports. It also sets the protocol to TCP and assigns the provided process ID
+ * to the key.
  *
  * The function handles both IPv4 and IPv6 addresses by converting them to an
  * IPv6-mapped format for uniformity.
@@ -360,7 +393,6 @@ static inline void process_tcp(struct sock *sk, statkey *key, pid_t pid) {
     break;
   }
   default: {
-
     return;
   }
   }
@@ -378,7 +410,8 @@ static inline void process_tcp(struct sock *sk, statkey *key, pid_t pid) {
 }
 
 /**
- * Process UDP socket information from a sk_buff and populate the key structure.
+ * Process UDP socket information from a sk_buff and populate the key
+ * structure.
  *
  * @param skb pointer to the socket buffer containing the UDP packet
  * @param key pointer to the statkey structure to be populated
@@ -425,6 +458,8 @@ static inline void process_udp_recv(struct sk_buff *skb, statkey *key,
 
     break;
   }
+  default:
+    return;
   }
 
   key->src_port = bpf_ntohs(BPF_CORE_READ(udphdr, source));
@@ -468,9 +503,9 @@ static inline size_t process_icmp4(struct sk_buff *skb, statkey *key,
 
 static inline size_t process_icmp6(struct sk_buff *skb, statkey *key,
                                    pid_t pid) {
-  struct icmphdr *icmphdr =
-      (struct icmphdr *)(BPF_CORE_READ(skb, head) +
-                         BPF_CORE_READ(skb, transport_header));
+  struct icmp6hdr *icmphdr =
+      (struct icmp6hdr *)(BPF_CORE_READ(skb, head) +
+                          BPF_CORE_READ(skb, transport_header));
 
   struct ipv6hdr *iphdr =
       (struct ipv6hdr *)(BPF_CORE_READ(skb, head) +
@@ -480,11 +515,11 @@ static inline size_t process_icmp6(struct sk_buff *skb, statkey *key,
   BPF_CORE_READ_INTO(&key->dstip, iphdr, daddr);
 
   // store ICMP type in src port
-  key->src_port = BPF_CORE_READ(icmphdr, type);
+  key->src_port = BPF_CORE_READ(icmphdr, icmp6_type);
   // store ICMP code in dst port
-  key->dst_port = BPF_CORE_READ(icmphdr, code);
+  key->dst_port = BPF_CORE_READ(icmphdr, icmp6_code);
 
-  key->proto = IPPROTO_ICMP;
+  key->proto = IPPROTO_ICMPV6;
   key->pid = pid;
 
   size_t msglen = bpf_ntohs(BPF_CORE_READ(iphdr, payload_len));
@@ -493,7 +528,8 @@ static inline size_t process_icmp6(struct sk_buff *skb, statkey *key,
 }
 
 /**
- * Process UDP socket information from a sk_buff and populate the key structure.
+ * Process UDP socket information from a sk_buff and populate the key
+ * structure.
  *
  * @param skb pointer to the socket buffer containing the UDP packet
  * @param key pointer to the statkey structure to be populated
@@ -525,7 +561,8 @@ static inline size_t process_udp_send(struct sk_buff *skb, statkey *key,
  * packet and the given size in bytes. If the key is already present, the
  * packet and byte counters are atomically incremented.
  *
- * @param key pointer to the statkey structure containing the key to be updated
+ * @param key pointer to the statkey structure containing the key to be
+ * updated
  * @param size size of the packet to be counted
  *
  * @throws none
@@ -547,8 +584,8 @@ static inline void update_val(statkey *key, size_t size) {
 /**
  * Hook function for kprobe on tcp_sendmsg function.
  *
- * Populates the statkey structure with information from the UDP packet and the
- * process ID associated with the packet, and updates the packet and byte
+ * Populates the statkey structure with information from the UDP packet and
+ * the process ID associated with the packet, and updates the packet and byte
  * counters in the packet count map.
  *
  * @param sk pointer to the socket structure
@@ -647,8 +684,8 @@ int BPF_KPROBE(ip_send_skb, struct net *net, struct sk_buff *skb) {
 /**
  * Hook function for kprobe on skb_consume_udp function.
  *
- * Populates the statkey structure with information from the UDP packet and the
- * process ID associated with the packet, and updates the packet and byte
+ * Populates the statkey structure with information from the UDP packet and
+ * the process ID associated with the packet, and updates the packet and byte
  * counters in the packet count map.
  *
  * @param sk pointer to the socket structure
@@ -678,8 +715,8 @@ int BPF_KPROBE(skb_consume_udp, struct sock *sk, struct sk_buff *skb, int len) {
 /**
  * Hook function for kprobe on icmp_send function.
  *
- * Populates the statkey structure with information from the ICMP packet and the
- * process ID associated with the packet, and updates the packet and byte
+ * Populates the statkey structure with information from the ICMP packet and
+ * the process ID associated with the packet, and updates the packet and byte
  * counters in the packet count map.
  *
  * @param skb pointer to the socket buffer containing the ICMP packet
@@ -738,8 +775,8 @@ int BPF_KPROBE(icmp6_send, struct sk_buff *skb, int type) {
 /**
  * Hook function for kprobe on icmp_rcv function.
  *
- * Populates the statkey structure with information from the ICMP packet and the
- * process ID associated with the packet, and updates the packet and byte
+ * Populates the statkey structure with information from the ICMP packet and
+ * the process ID associated with the packet, and updates the packet and byte
  * counters in the packet count map.
  *
  * @param skb pointer to the socket buffer containing the ICMP packet

@@ -33,7 +33,7 @@ import (
 
 const (
 	defaultIface                          = "eth0"
-	defaultTimeout                        = 1 * time.Hour
+	defaultTimeout                        = 10 * time.Minute
 	defaultXDPMode                        = "auto"
 	XDPAttachModeNone link.XDPAttachFlags = 0
 )

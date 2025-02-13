@@ -151,17 +151,17 @@ func startKprobes(hooks []kprobeHook, links []link.Link) []link.Link {
 
 	err := features.HaveProgramType(ebpf.Kprobe)
 	if errors.Is(err, ebpf.ErrNotSupported) {
-		log.Fatalf("Kprobes are not supported on this kernel")
+		log.Fatalf("KProbes are not supported on this kernel")
 	}
 
 	if err != nil {
-		log.Fatalf("Error checking Kprobes support: %v", err)
+		log.Fatalf("Error checking KProbes support: %v", err)
 	}
 
 	for _, kp := range hooks {
 		l, err = link.Kprobe(kp.kprobe, kp.prog, nil)
 		if err != nil {
-			log.Printf("Unable to attach %q Kprobe: %v", kp.kprobe, err)
+			log.Printf("Unable to attach %q KProbe: %v", kp.kprobe, err)
 
 			continue
 		}
@@ -169,7 +169,7 @@ func startKprobes(hooks []kprobeHook, links []link.Link) []link.Link {
 		links = append(links, l)
 	}
 
-	log.Printf("Starting on interface %q using Kprobes mode w/ PID tracking, listening for %v",
+	log.Printf("Starting on interface %q using KProbes mode w/ PID tracking, listening for %v",
 		*ifname, durafmt.Parse(*timeout))
 
 	return links
