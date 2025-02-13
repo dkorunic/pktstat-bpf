@@ -20,6 +20,7 @@ type counterStatkey struct {
 	Proto   uint8
 	_       [3]byte
 	Pid     int32
+	Comm    [16]int8
 }
 
 type counterStatvalue struct {

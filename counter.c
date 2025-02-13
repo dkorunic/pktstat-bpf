@@ -39,18 +39,20 @@
 #define TC_ACT_UNSPEC -1
 #define AF_INET 2
 #define AF_INET6 10
+#define TASK_COMM_LEN 16
 
 #define OK 1
 #define NOK 0
 
 // Map key struct for IP traffic
 typedef struct statkey_t {
-  struct in6_addr srcip; // source IPv6 address
-  struct in6_addr dstip; // destination IPv6 address
-  __u16 src_port;        // source port
-  __u16 dst_port;        // destination port
-  __u8 proto;            // transport protocol
-  pid_t pid;             // process ID
+  struct in6_addr srcip;    // source IPv6 address
+  struct in6_addr dstip;    // destination IPv6 address
+  __u16 src_port;           // source port
+  __u16 dst_port;           // destination port
+  __u8 proto;               // transport protocol
+  pid_t pid;                // process ID
+  char comm[TASK_COMM_LEN]; // process command
 } statkey;
 
 // Map value struct with counters
@@ -482,8 +484,8 @@ static inline void update_val(statkey *key, size_t size) {
 /**
  * Hook function for kprobe on tcp_sendmsg function.
  *
- * Populates the statkey structure with information from the socket and the
- * process ID associated with the socket, and updates the packet and byte
+ * Populates the statkey structure with information from the UDP packet and the
+ * process ID associated with the packet, and updates the packet and byte
  * counters in the packet count map.
  *
  * @param sk pointer to the socket structure
@@ -500,6 +502,7 @@ int BPF_KPROBE(tcp_sendmsg, struct sock *sk, struct msghdr *msg, size_t size) {
   __builtin_memset(&key, 0, sizeof(key));
 
   pid_t pid = bpf_get_current_pid_tgid() & 0xFFFFFFFF;
+  bpf_get_current_comm(&key.comm, sizeof(key.comm));
 
   process_tcp(sk, &key, pid);
   update_val(&key, size);
@@ -531,6 +534,7 @@ int BPF_KPROBE(tcp_cleanup_rbuf, struct sock *sk, int copied) {
   __builtin_memset(&key, 0, sizeof(key));
 
   pid_t pid = bpf_get_current_pid_tgid() & 0xFFFFFFFF;
+  bpf_get_current_comm(&key.comm, sizeof(key.comm));
 
   process_tcp(sk, &key, pid);
   update_val(&key, copied);
@@ -541,12 +545,12 @@ int BPF_KPROBE(tcp_cleanup_rbuf, struct sock *sk, int copied) {
 /**
  * Hook function for kprobe on ip_send_skb function.
  *
- * Populates the statkey structure with information from the UDP packet and the
- * process ID associated with the packet, and updates the packet and byte
+ * Populates the statkey structure with information from the socket and the
+ * process ID associated with the socket, and updates the packet and byte
  * counters in the packet count map.
  *
- * @param net pointer to the network namespace
- * @param skb pointer to the socket buffer containing the UDP packet
+ * @param net pointer to the network namespace structure
+ * @param skb pointer to the socket buffer
  *
  * @return 0
  *
@@ -563,6 +567,7 @@ int BPF_KPROBE(ip_send_skb, struct net *net, struct sk_buff *skb) {
   __builtin_memset(&key, 0, sizeof(key));
 
   pid_t pid = bpf_get_current_pid_tgid() & 0xFFFFFFFF;
+  bpf_get_current_comm(&key.comm, sizeof(key.comm));
 
   size_t msglen = process_udp_send(skb, &key, pid);
   update_val(&key, msglen);
@@ -591,6 +596,7 @@ int BPF_KPROBE(skb_consume_udp, struct sock *sk, struct sk_buff *skb, int len) {
   __builtin_memset(&key, 0, sizeof(key));
 
   pid_t pid = bpf_get_current_pid_tgid() & 0xFFFFFFFF;
+  bpf_get_current_comm(&key.comm, sizeof(key.comm));
 
   process_udp_recv(skb, &key, pid);
   update_val(&key, len);

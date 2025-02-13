@@ -66,6 +66,7 @@ func processMap(m *ebpf.Map, start time.Time) ([]statEntry, error) {
 			Packets: val.Packets,
 			Bitrate: 8 * float64(val.Bytes) / dur,
 			Pid:     key.Pid,
+			Comm:    byte2String(key.Comm[:]),
 		})
 	}
 
@@ -111,7 +112,7 @@ func outputPlain(m []statEntry) {
 		sb.WriteString(fmt.Sprintf("bitrate: %v, packets: %d, bytes: %d, proto: %v, src: %v:%v, dst: %v:%v",
 			formatBitrate(v.Bitrate), v.Packets, v.Bytes, v.Proto, v.SrcIP, v.SrcPort, v.DstIP, v.DstPort))
 		if *useKprobes {
-			sb.WriteString(fmt.Sprintf(", pid: %d", v.Pid))
+			sb.WriteString(fmt.Sprintf(", pid: %d, comm: %v", v.Pid, v.Comm))
 		}
 		sb.WriteString("\n")
 	}
@@ -129,4 +130,18 @@ func outputJSON(m []statEntry) {
 	out, _ := json.Marshal(m)
 
 	fmt.Printf("%v\n", string(out))
+}
+
+// byte2String converts a slice of int8 to a string.
+//
+// It takes a slice of int8 as a parameter, creates a new slice of byte of the same length,
+// copies the values of the int8 slice to the byte slice, and converts the byte slice to a string.
+// The resulting string is then returned.
+func byte2String(bs []int8) string {
+	b := make([]byte, len(bs))
+	for i, v := range bs {
+		b[i] = byte(v)
+	}
+
+	return string(b)
 }
