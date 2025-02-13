@@ -1,6 +1,10 @@
 package main
 
-import "net/netip"
+import (
+	"net/netip"
+
+	"github.com/cilium/ebpf"
+)
 
 type statEntry struct {
 	SrcIP   netip.Addr `json:"srcIp"`
@@ -13,4 +17,9 @@ type statEntry struct {
 	Pid     int32      `json:"pid"`
 	SrcPort uint16     `json:"srcPort"`
 	DstPort uint16     `json:"dstPort"`
+}
+
+type kprobeHook struct {
+	prog   *ebpf.Program
+	kprobe string
 }

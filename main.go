@@ -39,11 +39,6 @@ import (
 	"github.com/hako/durafmt"
 )
 
-type kprobeHook struct {
-	prog   *ebpf.Program
-	kprobe string
-}
-
 func main() {
 	parseFags()
 
@@ -221,7 +216,7 @@ func startXDP(objs counterObjects, iface *net.Interface, links []link.Link) []li
 
 	log.Printf("Starting on interface %q using XDP (eXpress Data Path) eBPF mode, listening for %v",
 		*ifname, durafmt.Parse(*timeout))
-	log.Printf("Due to XDP mode, egress statistics are not available. Upon program exit, interface reset is possible.")
+	log.Printf("Due to XDP mode, egress statistics are not available. Upon program exit, interface reset may happen on some cards.")
 	return links
 }
 
