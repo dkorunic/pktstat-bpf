@@ -12,11 +12,7 @@ builds:
       - linux
     goarch:
       - amd64
-      - arm
       - arm64
-    goarm:
-      - 6
-      - 7
 universal_binaries:
   - replace: true
 changelog:
