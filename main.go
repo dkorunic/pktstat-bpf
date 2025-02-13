@@ -75,6 +75,10 @@ func main() {
 			{kprobe: "tcp_cleanup_rbuf", prog: objs.TcpCleanupRbuf},
 			{kprobe: "ip_send_skb", prog: objs.IpSendSkb},
 			{kprobe: "skb_consume_udp", prog: objs.SkbConsumeUdp},
+			{kprobe: "__icmp_send", prog: objs.IcmpSend},
+			{kprobe: "icmp6_send", prog: objs.Icmp6Send},
+			{kprobe: "icmp_rcv", prog: objs.IcmpRcv},
+			{kprobe: "icmpv6_rcv", prog: objs.Icmpv6Rcv},
 		}
 
 		links = startKprobes(hooks, links)

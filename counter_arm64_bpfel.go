@@ -70,6 +70,10 @@ type counterSpecs struct {
 //
 // It can be passed ebpf.CollectionSpec.Assign.
 type counterProgramSpecs struct {
+	IcmpSend        *ebpf.ProgramSpec `ebpf:"__icmp_send"`
+	Icmp6Send       *ebpf.ProgramSpec `ebpf:"icmp6_send"`
+	IcmpRcv         *ebpf.ProgramSpec `ebpf:"icmp_rcv"`
+	Icmpv6Rcv       *ebpf.ProgramSpec `ebpf:"icmpv6_rcv"`
 	IpSendSkb       *ebpf.ProgramSpec `ebpf:"ip_send_skb"`
 	SkbConsumeUdp   *ebpf.ProgramSpec `ebpf:"skb_consume_udp"`
 	TcCountPackets  *ebpf.ProgramSpec `ebpf:"tc_count_packets"`
@@ -130,6 +134,10 @@ type counterVariables struct {
 //
 // It can be passed to loadCounterObjects or ebpf.CollectionSpec.LoadAndAssign.
 type counterPrograms struct {
+	IcmpSend        *ebpf.Program `ebpf:"__icmp_send"`
+	Icmp6Send       *ebpf.Program `ebpf:"icmp6_send"`
+	IcmpRcv         *ebpf.Program `ebpf:"icmp_rcv"`
+	Icmpv6Rcv       *ebpf.Program `ebpf:"icmpv6_rcv"`
 	IpSendSkb       *ebpf.Program `ebpf:"ip_send_skb"`
 	SkbConsumeUdp   *ebpf.Program `ebpf:"skb_consume_udp"`
 	TcCountPackets  *ebpf.Program `ebpf:"tc_count_packets"`
@@ -140,6 +148,10 @@ type counterPrograms struct {
 
 func (p *counterPrograms) Close() error {
 	return _CounterClose(
+		p.IcmpSend,
+		p.Icmp6Send,
+		p.IcmpRcv,
+		p.Icmpv6Rcv,
 		p.IpSendSkb,
 		p.SkbConsumeUdp,
 		p.TcCountPackets,

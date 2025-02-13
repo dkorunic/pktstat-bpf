@@ -396,13 +396,14 @@ static inline void process_udp_recv(struct sk_buff *skb, statkey *key,
   struct udphdr *udphdr =
       (struct udphdr *)(BPF_CORE_READ(skb, head) +
                         BPF_CORE_READ(skb, transport_header));
-  struct iphdr *iphdr = (struct iphdr *)(BPF_CORE_READ(skb, head) +
-                                         BPF_CORE_READ(skb, network_header));
 
   __u16 proto = BPF_CORE_READ(skb, protocol);
 
   switch (bpf_ntohs(proto)) {
   case ETH_P_IP: {
+    struct iphdr *iphdr = (struct iphdr *)(BPF_CORE_READ(skb, head) +
+                                           BPF_CORE_READ(skb, network_header));
+
     // convert to V4MAPPED address
     __be32 ip4_src = BPF_CORE_READ(iphdr, saddr);
     key->srcip.s6_addr16[5] = bpf_htons(0xffff);
@@ -415,6 +416,10 @@ static inline void process_udp_recv(struct sk_buff *skb, statkey *key,
     break;
   }
   case ETH_P_IPV6: {
+    struct ipv6hdr *iphdr =
+        (struct ipv6hdr *)(BPF_CORE_READ(skb, head) +
+                           BPF_CORE_READ(skb, network_header));
+
     BPF_CORE_READ_INTO(&key->srcip, iphdr, saddr);
     BPF_CORE_READ_INTO(&key->dstip, iphdr, daddr);
 
@@ -427,6 +432,64 @@ static inline void process_udp_recv(struct sk_buff *skb, statkey *key,
 
   key->proto = IPPROTO_UDP;
   key->pid = pid;
+}
+
+static inline size_t process_icmp4(struct sk_buff *skb, statkey *key,
+                                   pid_t pid) {
+  struct icmphdr *icmphdr =
+      (struct icmphdr *)(BPF_CORE_READ(skb, head) +
+                         BPF_CORE_READ(skb, transport_header));
+  struct iphdr *iphdr = (struct iphdr *)(BPF_CORE_READ(skb, head) +
+                                         BPF_CORE_READ(skb, network_header));
+
+  // convert to V4MAPPED address
+  __be32 ip4_src = BPF_CORE_READ(iphdr, saddr);
+  key->srcip.s6_addr16[5] = bpf_htons(0xffff);
+  __builtin_memcpy(&key->srcip.s6_addr32[3], &ip4_src, sizeof(ip4_src));
+
+  // convert to V4MAPPED address
+  __be32 ip4_dst = BPF_CORE_READ(iphdr, daddr);
+  key->dstip.s6_addr16[5] = bpf_htons(0xffff);
+  __builtin_memcpy(&key->dstip.s6_addr32[3], &ip4_dst, sizeof(ip4_dst));
+
+  // store ICMP type in src port
+  key->src_port = BPF_CORE_READ(icmphdr, type);
+  // store ICMP code in dst port
+  key->dst_port = BPF_CORE_READ(icmphdr, code);
+
+  key->proto = IPPROTO_ICMP;
+  key->pid = pid;
+
+  size_t msglen = bpf_ntohs(BPF_CORE_READ(iphdr, tot_len)) -
+                  BPF_CORE_READ_BITFIELD_PROBED(iphdr, ihl) * 4;
+
+  return msglen;
+}
+
+static inline size_t process_icmp6(struct sk_buff *skb, statkey *key,
+                                   pid_t pid) {
+  struct icmphdr *icmphdr =
+      (struct icmphdr *)(BPF_CORE_READ(skb, head) +
+                         BPF_CORE_READ(skb, transport_header));
+
+  struct ipv6hdr *iphdr =
+      (struct ipv6hdr *)(BPF_CORE_READ(skb, head) +
+                         BPF_CORE_READ(skb, network_header));
+
+  BPF_CORE_READ_INTO(&key->srcip, iphdr, saddr);
+  BPF_CORE_READ_INTO(&key->dstip, iphdr, daddr);
+
+  // store ICMP type in src port
+  key->src_port = BPF_CORE_READ(icmphdr, type);
+  // store ICMP code in dst port
+  key->dst_port = BPF_CORE_READ(icmphdr, code);
+
+  key->proto = IPPROTO_ICMP;
+  key->pid = pid;
+
+  size_t msglen = bpf_ntohs(BPF_CORE_READ(iphdr, payload_len));
+
+  return msglen;
 }
 
 /**
@@ -502,7 +565,9 @@ int BPF_KPROBE(tcp_sendmsg, struct sock *sk, struct msghdr *msg, size_t size) {
   __builtin_memset(&key, 0, sizeof(key));
 
   pid_t pid = bpf_get_current_pid_tgid() & 0xFFFFFFFF;
-  bpf_get_current_comm(&key.comm, sizeof(key.comm));
+  if (pid > 0) {
+    bpf_get_current_comm(&key.comm, sizeof(key.comm));
+  }
 
   process_tcp(sk, &key, pid);
   update_val(&key, size);
@@ -534,7 +599,9 @@ int BPF_KPROBE(tcp_cleanup_rbuf, struct sock *sk, int copied) {
   __builtin_memset(&key, 0, sizeof(key));
 
   pid_t pid = bpf_get_current_pid_tgid() & 0xFFFFFFFF;
-  bpf_get_current_comm(&key.comm, sizeof(key.comm));
+  if (pid > 0) {
+    bpf_get_current_comm(&key.comm, sizeof(key.comm));
+  }
 
   process_tcp(sk, &key, pid);
   update_val(&key, copied);
@@ -567,7 +634,9 @@ int BPF_KPROBE(ip_send_skb, struct net *net, struct sk_buff *skb) {
   __builtin_memset(&key, 0, sizeof(key));
 
   pid_t pid = bpf_get_current_pid_tgid() & 0xFFFFFFFF;
-  bpf_get_current_comm(&key.comm, sizeof(key.comm));
+  if (pid > 0) {
+    bpf_get_current_comm(&key.comm, sizeof(key.comm));
+  }
 
   size_t msglen = process_udp_send(skb, &key, pid);
   update_val(&key, msglen);
@@ -596,10 +665,132 @@ int BPF_KPROBE(skb_consume_udp, struct sock *sk, struct sk_buff *skb, int len) {
   __builtin_memset(&key, 0, sizeof(key));
 
   pid_t pid = bpf_get_current_pid_tgid() & 0xFFFFFFFF;
-  bpf_get_current_comm(&key.comm, sizeof(key.comm));
+  if (pid > 0) {
+    bpf_get_current_comm(&key.comm, sizeof(key.comm));
+  }
 
   process_udp_recv(skb, &key, pid);
   update_val(&key, len);
+
+  return 0;
+}
+
+/**
+ * Hook function for kprobe on icmp_send function.
+ *
+ * Populates the statkey structure with information from the ICMP packet and the
+ * process ID associated with the packet, and updates the packet and byte
+ * counters in the packet count map.
+ *
+ * @param skb pointer to the socket buffer containing the ICMP packet
+ * @param type type of ICMP packet
+ *
+ * @return 0
+ *
+ * @throws none
+ */
+SEC("kprobe/__icmp_send")
+int BPF_KPROBE(__icmp_send, struct sk_buff *skb, int type) {
+  statkey key;
+  __builtin_memset(&key, 0, sizeof(key));
+
+  pid_t pid = bpf_get_current_pid_tgid() & 0xFFFFFFFF;
+  if (pid > 0) {
+    bpf_get_current_comm(&key.comm, sizeof(key.comm));
+  }
+
+  size_t msglen = process_icmp4(skb, &key, pid);
+  update_val(&key, msglen);
+
+  return 0;
+}
+
+/**
+ * Hook function for kprobe on icmp6_send function.
+ *
+ * Populates the statkey structure with information from the ICMPv6 packet and
+ * the process ID associated with the packet, and updates the packet and byte
+ * counters in the packet count map.
+ *
+ * @param skb pointer to the socket buffer containing the ICMPv6 packet
+ * @param type type of ICMPv6 packet
+ *
+ * @return 0
+ *
+ * @throws none
+ */
+SEC("kprobe/icmp6_send")
+int BPF_KPROBE(icmp6_send, struct sk_buff *skb, int type) {
+  statkey key;
+  __builtin_memset(&key, 0, sizeof(key));
+
+  pid_t pid = bpf_get_current_pid_tgid() & 0xFFFFFFFF;
+  if (pid > 0) {
+    bpf_get_current_comm(&key.comm, sizeof(key.comm));
+  }
+
+  size_t msglen = process_icmp6(skb, &key, pid);
+  update_val(&key, msglen);
+
+  return 0;
+}
+
+/**
+ * Hook function for kprobe on icmp_rcv function.
+ *
+ * Populates the statkey structure with information from the ICMP packet and the
+ * process ID associated with the packet, and updates the packet and byte
+ * counters in the packet count map.
+ *
+ * @param skb pointer to the socket buffer containing the ICMP packet
+ * @param type type of ICMP packet
+ *
+ * @return 0
+ *
+ * @throws none
+ */
+SEC("kprobe/icmp_rcv")
+int BPF_KPROBE(icmp_rcv, struct sk_buff *skb, int type) {
+  statkey key;
+  __builtin_memset(&key, 0, sizeof(key));
+
+  pid_t pid = bpf_get_current_pid_tgid() & 0xFFFFFFFF;
+  if (pid > 0) {
+    bpf_get_current_comm(&key.comm, sizeof(key.comm));
+  }
+
+  size_t msglen = process_icmp4(skb, &key, pid);
+  update_val(&key, msglen);
+
+  return 0;
+}
+
+/**
+ * Hook function for kprobe on icmpv6_rcv function.
+ *
+ * Populates the statkey structure with information from the ICMPv6 packet and
+ * the process ID associated with the packet, and updates the packet and byte
+ * counters in the packet count map.
+ *
+ * @param skb pointer to the socket buffer containing the ICMPv6 packet
+ * @param type type of ICMPv6 packet
+ *
+ * @return 0
+ *
+ * @throws none
+ */
+SEC("kprobe/icmpv6_rcv")
+int BPF_KPROBE(icmpv6_rcv, struct sk_buff *skb, int type) {
+  statkey key;
+  __builtin_memset(&key, 0, sizeof(key));
+
+  pid_t pid = bpf_get_current_pid_tgid() & 0xFFFFFFFF;
+  if (pid > 0) {
+    bpf_get_current_comm(&key.comm, sizeof(key.comm));
+  }
+
+  size_t msglen = process_icmp6(skb, &key, pid);
+  update_val(&key, msglen);
 
   return 0;
 }
