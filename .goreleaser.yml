@@ -39,7 +39,7 @@ checksum:
 snapshot:
   name_template: "{{ .Tag }}-next"
 nfpms:
-  - package_name: pkgstat-bpf
+  - package_name: pktstat-bpf
     vendor: Dinko Korunic
     homepage: https://github.com/dkorunic/pktstat-bpf
     maintainer: Dinko Korunic <dkorunic@gmail.com>
