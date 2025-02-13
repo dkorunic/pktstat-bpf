@@ -38,7 +38,7 @@ const (
 	Mbps               = 1000 * Kbps
 	Gbps               = 1000 * Mbps
 	Tbps               = 1000 * Gbps
-	KernelComm         = "kernel"
+	KernelComm         = "[kernel]"
 )
 
 // processMap generates statEntry objects from an ebpf.Map using the provided start time.
@@ -120,7 +120,7 @@ func outputPlain(m []statEntry) {
 				formatBitrate(v.Bitrate), v.Packets, v.Bytes, v.Proto, v.SrcIP, v.SrcPort, v.DstIP, v.DstPort))
 		}
 
-		if *useKprobes {
+		if *useKProbes {
 			sb.WriteString(fmt.Sprintf(", pid: %d, comm: %v", v.Pid, v.Comm))
 		}
 
@@ -149,16 +149,17 @@ func outputJSON(m []statEntry) {
 // Otherwise, it creates a new byte slice, copies the input byte slice into it,
 // trims any null bytes from the end of the slice, and returns the result as a string.
 func comm2String(bs []int8) string {
-	if len(bs) == 0 {
-		return KernelComm
-	}
-
 	b := make([]byte, len(bs))
 	for i, v := range bs {
 		b[i] = byte(v)
 	}
 
+	// trim excess NULLs
 	b = bytes.Trim(b, "\x00")
+
+	if len(b) == 0 {
+		return KernelComm
+	}
 
 	return string(b)
 }

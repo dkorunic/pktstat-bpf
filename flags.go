@@ -40,7 +40,7 @@ const (
 
 var (
 	ifname, xdpMode                               *string
-	jsonOutput, version, help, useXDP, useKprobes *bool
+	jsonOutput, version, help, useXDP, useKProbes *bool
 	timeout                                       *time.Duration
 	xdpAttachFlags                                link.XDPAttachFlags
 )
@@ -51,7 +51,7 @@ func parseFags() {
 	help = fs.Bool('?', "help", "display help")
 	jsonOutput = fs.Bool('j', "json", "if true, output in JSON format")
 	useXDP = fs.Bool('x', "xdp", "if true, use XDP instead of TC (this disables egress statistics)")
-	useKprobes = fs.Bool('k', "kprobes", "if true, use kprobes for per-proces TCP/UDP statistics")
+	useKProbes = fs.Bool('k', "kprobes", "if true, use KProbes for per-proces TCP/UDP statistics")
 
 	version = fs.BoolLong("version", "display program version")
 

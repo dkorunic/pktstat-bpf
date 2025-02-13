@@ -11,7 +11,9 @@
 
 pktstat-bpf is a simple replacement for ncurses/libpcap-based [pktstat](https://github.com/dleonard0/pktstat), using Linux eBPF ([extended Berkeley Packet Filter](https://prototype-kernel.readthedocs.io/en/latest/bpf/)) program, allowing packet statistics gathering even under **very high traffic volume** conditions, typically several million packets per second even on an average server. In this scenario (high volume, DoS attacks etc.) typically regular packet capture solutions start being unreliable due to increasing packet loss.
 
-By default it uses **TC** (Traffic Control) eBPF hooks with TCX attaching requiring at minimum Linux kernel **v6.6** for both ingress and egress traffic statistics. Alternatively it can switch to [XDP](https://github.com/xdp-project/xdp-tutorial) (eXpress Data Path) hook but with a consequence of **losing egress statistics** since **XDP** works only in ingress path. XDP mode due to XDP program to network interface attaching calls requires at minimum Linux kernel **v5.9**. Some distributions might have backported XDP/TC patches (notable example is Red Hat Enterprise Linux kernel) and eBPF program might work on older kernels too.
+By default it uses **TC** (Traffic Control) eBPF hooks with TCX attaching requiring at minimum Linux kernel **v6.6** for both ingress and egress traffic statistics for TCP, UDP, ICMPv4 and ICMPv6. It can also switch to even faster [XDP](https://github.com/xdp-project/xdp-tutorial) (eXpress Data Path) hook but with a consequence of **losing egress statistics** since **XDP** works only in ingress path. XDP mode due to XDP program to network interface attaching calls requires at minimum Linux kernel **v5.9**. Some distributions might have backported XDP/TC patches (notable example is Red Hat Enterprise Linux kernel) and eBPF program might work on older kernels too.
+
+Alternatively it can use **KProbes** to monitor TCP, UDP, ICMPv4 and ICMPv6 communication throughout all containers, K8s pods, translations and forwards and display process ID as well as process name, if the traffic was being sent or delivered to userspace application. KProbes traditionally work the slowest, being closest to the userspace -- but they bring sometimes useful process information.
 
 At the end of the execution program will display per-IP and per-protocol statistics sorted by per-connection bps, packets and (source-IP:port, destination-IP:port) tuples.
 
@@ -37,7 +39,7 @@ The following table maps features, requirements and expected performance for des
 | --------------------------------------------------- | ------- | ------ | -------------- | ---------------- | --------------- | ----------------- |
 | Generic [PCAP](https://github.com/dkorunic/pktstat) | Yes     | Yes    | Low            | No               | Any             | No                |
 | [AF_PACKET](https://github.com/dkorunic/pktstat)    | Yes     | Yes    | Medium         | No               | v2.2            | No                |
-| Kprobes                                             | Yes     | Yes    | Medium+        | **Yes**              | v2.6            | No                |
+| KProbes                                             | Yes     | Yes    | Medium+        | **Yes**          | v2.6            | No                |
 | TC                                                  | Yes     | Yes    | **High**       | No               | v6.6            | No                |
 | XDP Generic                                         | Yes     | **No** | **High**       | No               | v5.9            | No                |
 | XDP Native                                          | Yes     | **No** | **Very high**  | No               | v5.9            | No                |

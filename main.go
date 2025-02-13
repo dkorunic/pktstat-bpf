@@ -68,8 +68,8 @@ func main() {
 	}()
 
 	switch {
-	// Kprobes w/ PID tracking
-	case *useKprobes:
+	// KProbes w/ PID tracking
+	case *useKProbes:
 		hooks := []kprobeHook{
 			{kprobe: "tcp_sendmsg", prog: objs.TcpSendmsg},
 			{kprobe: "tcp_cleanup_rbuf", prog: objs.TcpCleanupRbuf},
@@ -81,7 +81,7 @@ func main() {
 			{kprobe: "icmpv6_rcv", prog: objs.Icmpv6Rcv},
 		}
 
-		links = startKprobes(hooks, links)
+		links = startKProbes(hooks, links)
 	// XDP
 	case *useXDP:
 		links = startXDP(objs, iface, links)
@@ -125,14 +125,14 @@ func main() {
 	}
 }
 
-// startKprobes attaches a series of eBPF programs to kernel functions using Kprobes.
+// startKProbes attaches a series of eBPF programs to kernel functions using KProbes.
 //
 // This function iterates over a slice of kprobeHook structs, each containing a kernel function
 // name (kprobe) and an associated eBPF program. It attempts to attach each eBPF program to its
-// respective kernel function using Kprobes. If a Kprobe cannot be attached, an error message
+// respective kernel function using KProbes. If a Kprobe cannot be attached, an error message
 // is logged, but the function continues with the next Kprobe.
 //
-// The function first checks if Kprobes are supported by the current kernel. If not supported,
+// The function first checks if KProbes are supported by the current kernel. If not supported,
 // it logs a fatal error and terminates the program.
 //
 // Parameters:
@@ -140,13 +140,13 @@ func main() {
 //	hooks []kprobeHook: A slice of kprobeHook structs, where each struct contains a kernel
 //	function name and an associated eBPF program.
 //
-//	links []link.Link: A slice of link.Link objects to which successfully attached Kprobes
+//	links []link.Link: A slice of link.Link objects to which successfully attached KProbes
 //	are appended.
 //
 // Returns:
 //
-//	[]link.Link: The updated slice of link.Link objects, including any newly attached Kprobes.
-func startKprobes(hooks []kprobeHook, links []link.Link) []link.Link {
+//	[]link.Link: The updated slice of link.Link objects, including any newly attached KProbes.
+func startKProbes(hooks []kprobeHook, links []link.Link) []link.Link {
 	var l link.Link
 
 	err := features.HaveProgramType(ebpf.Kprobe)
