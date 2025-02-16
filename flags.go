@@ -34,15 +34,16 @@ import (
 const (
 	defaultIface                          = "eth0"
 	defaultTimeout                        = 10 * time.Minute
+	defaultRefresh                        = 1 * time.Second
 	defaultXDPMode                        = "auto"
 	XDPAttachModeNone link.XDPAttachFlags = 0
 )
 
 var (
-	ifname, xdpMode                               *string
-	jsonOutput, version, help, useXDP, useKProbes *bool
-	timeout                                       *time.Duration
-	xdpAttachFlags                                link.XDPAttachFlags
+	ifname, xdpMode                                          *string
+	jsonOutput, version, help, useXDP, useKProbes, enableTUI *bool
+	timeout, refresh                                         *time.Duration
+	xdpAttachFlags                                           link.XDPAttachFlags
 )
 
 func parseFags() {
@@ -52,13 +53,15 @@ func parseFags() {
 	jsonOutput = fs.Bool('j', "json", "if true, output in JSON format")
 	useXDP = fs.Bool('x', "xdp", "if true, use XDP instead of TC (this disables egress statistics)")
 	useKProbes = fs.Bool('k', "kprobes", "if true, use KProbes for per-proces TCP/UDP statistics")
+	enableTUI = fs.Bool('g', "tui", "if true, enable TUI")
 
 	version = fs.BoolLong("version", "display program version")
 
 	ifname = fs.String('i', "iface", findFirstEtherIface(), "interface to read from")
 	xdpMode = fs.StringLong("xdp_mode", defaultXDPMode, "XDP attach mode (auto, generic, native or offload; native and offload require NIC driver support)")
 
-	timeout = fs.Duration('t', "timeout", defaultTimeout, "timeout for packet capture")
+	refresh = fs.Duration('r', "refresh", defaultRefresh, "refresh interval in TUI")
+	timeout = fs.Duration('t', "timeout", defaultTimeout, "timeout for packet capture in CLI")
 
 	var err error
 

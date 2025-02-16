@@ -98,15 +98,21 @@ func formatBitrate(b float64) string {
 	return fmt.Sprintf("%.2fTbps", b/Tbps)
 }
 
-// outputPlain generates a plain text representation of the given statEntry slice.
+// outputPlain formats the provided statEntry slice into a plain text string.
 //
-// It takes a slice of statEntry structs as its parameter and formats them into a string
-// containing information about each entry's bitrate, packets, bytes, protocol, source IP,
-// source port, and destination IP and port. The resulting string is then printed to the
-// console.
+// Each line contains information about a single protocol flow, including bitrate,
+// packets, bytes, protocol, source IP:port, destination IP:port, and ICMP type and
+// code if applicable. If kprobes are being used, the PID and comm fields are also
+// included. The output is sorted by bitrate in descending order.
 //
-// The function does not return anything.
-func outputPlain(m []statEntry) {
+// Parameters:
+//
+//	m []statEntry - the statEntry slice to be formatted
+//
+// Returns:
+//
+//	string - the formatted string
+func outputPlain(m []statEntry) string {
 	var sb strings.Builder
 
 	for _, v := range m {
@@ -130,19 +136,25 @@ func outputPlain(m []statEntry) {
 		sb.WriteString("\n")
 	}
 
-	fmt.Printf("%v", sb.String())
+	return sb.String()
 }
 
-// outputJSON marshals the given slice of statEntry structs into a JSON string and prints it.
+// outputJSON formats the provided statEntry slice into a JSON string.
 //
-// The function takes a slice of statEntry structs as a parameter.
-// The slice is marshaled into a JSON string using the Marshal function of the goccy/go-json package.
-// The resulting JSON string is printed using the Printf function from the fmt package.
-// The function does not return any value.
-func outputJSON(m []statEntry) {
+// The JSON is created using the encoding/json package, marshaling the statEntry
+// slice into a JSON array. The output is a string.
+//
+// Parameters:
+//
+//	m []statEntry - the statEntry slice to be formatted
+//
+// Returns:
+//
+//	string - the JSON string representation of m
+func outputJSON(m []statEntry) string {
 	out, _ := json.Marshal(m)
 
-	fmt.Printf("%v\n", string(out))
+	return string(out)
 }
 
 // comm2String converts a byte slice to a string, trimming any null bytes.

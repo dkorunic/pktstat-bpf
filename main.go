@@ -95,33 +95,37 @@ func main() {
 
 	startTime := time.Now()
 
-	signalCh := make(chan os.Signal, 1)
-	signal.Notify(signalCh, os.Interrupt, syscall.SIGTERM, syscall.SIGINT)
+	if *enableTUI {
+		drawTUI(objs, startTime)
+	} else {
+		signalCh := make(chan os.Signal, 1)
+		signal.Notify(signalCh, os.Interrupt, syscall.SIGTERM, syscall.SIGINT)
 
-	go func() {
-		s := <-signalCh
-		_, _ = fmt.Fprintf(os.Stderr, "Received %v signal, trying to exit...\n", s)
-		cancel()
-	}()
-
-	if *timeout > 0 {
 		go func() {
-			time.Sleep(*timeout)
+			s := <-signalCh
+			_, _ = fmt.Fprintf(os.Stderr, "Received %v signal, trying to exit...\n", s)
 			cancel()
 		}()
-	}
 
-	<-c1.Done()
+		if *timeout > 0 {
+			go func() {
+				time.Sleep(*timeout)
+				cancel()
+			}()
+		}
 
-	m, err := processMap(objs.PktCount, startTime)
-	if err != nil {
-		log.Fatalf("Error reading eBPF map: %v", err)
-	}
+		<-c1.Done()
 
-	if *jsonOutput {
-		outputJSON(m)
-	} else {
-		outputPlain(m)
+		m, err := processMap(objs.PktCount, startTime)
+		if err != nil {
+			log.Fatalf("Error reading eBPF map: %v", err)
+		}
+
+		if *jsonOutput {
+			fmt.Println(outputJSON(m))
+		} else {
+			fmt.Printf(outputPlain(m))
+		}
 	}
 }
 
@@ -169,8 +173,8 @@ func startKProbes(hooks []kprobeHook, links []link.Link) []link.Link {
 		links = append(links, l)
 	}
 
-	log.Printf("Starting on interface %q using KProbes mode w/ PID tracking, listening for %v",
-		*ifname, durafmt.Parse(*timeout))
+	log.Printf("Using KProbes mode w/ PID tracking, listening for %v",
+		durafmt.Parse(*timeout))
 
 	return links
 }
