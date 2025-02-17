@@ -60,16 +60,20 @@ FLAGS
   -?, --help               display help
   -j, --json               if true, output in JSON format
   -x, --xdp                if true, use XDP instead of TC (this disables egress statistics)
-  -k, --kprobes            if true, use kprobes for per-proces TCP/UDP statistics
+  -k, --kprobes            if true, use KProbes for per-proces TCP/UDP statistics
+  -g, --tui                if true, enable TUI
       --version            display program version
   -i, --iface STRING       interface to read from (default: eth0)
       --xdp_mode STRING    XDP attach mode (auto, generic, native or offload; native and offload require NIC driver support) (default: auto)
-  -t, --timeout DURATION   timeout for packet capture (default: 1h0m0s)
+  -r, --refresh DURATION   refresh interval in TUI (default: 1s)
+  -t, --timeout DURATION   timeout for packet capture in CLI (default: 10m0s)
 ```
 
 It is possible to specify interface with `--iface`.
 
 Timeout `--timeout` will stop execution after a specified time, but it is also possible to interrupt program with Ctrl C, SIGTERM or SIGINT.
+
+With `--tui` program will switch to a very simple TUI primarily for continous monitoring purpose. Use arrow keys to browse statistics table and keys 'q' or 'x' to exit.
 
 With `--json` it is possible to get traffic statistics in JSON format.
 
