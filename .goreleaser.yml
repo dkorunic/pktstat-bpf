@@ -7,7 +7,7 @@ builds:
     env:
       - CGO_ENABLED=0
     ldflags: |
-      -s -w -extldflags '-static'
+      -s -w -extldflags '-static' -X "main.GitTag={{.Tag}}" -X "main.GitCommit={{.ShortCommit}}" -X "main.GitDirty= " -X "main.BuildTime={{.Date}}"
     goos:
       - linux
     goarch:
