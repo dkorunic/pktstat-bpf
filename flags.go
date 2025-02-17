@@ -102,4 +102,8 @@ func parseFags() {
 
 		os.Exit(1)
 	}
+
+	if *enableTUI {
+		*timeout = 0
+	}
 }
