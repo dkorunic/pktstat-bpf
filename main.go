@@ -87,7 +87,7 @@ func main() {
 		links = startXDP(objs, iface, links)
 	// TC
 	default:
-		startTC(objs, iface, links)
+		links = startTC(objs, iface, links)
 	}
 
 	c1, cancel := context.WithCancel(context.Background())
@@ -108,6 +108,8 @@ func main() {
 		}()
 
 		if *timeout > 0 {
+			log.Printf("Listening for %v before exiting", durafmt.Parse(*timeout))
+
 			go func() {
 				time.Sleep(*timeout)
 				cancel()
@@ -173,8 +175,7 @@ func startKProbes(hooks []kprobeHook, links []link.Link) []link.Link {
 		links = append(links, l)
 	}
 
-	log.Printf("Using KProbes mode w/ PID tracking, listening for %v",
-		durafmt.Parse(*timeout))
+	log.Printf("Using KProbes mode w/ PID/comm tracking")
 
 	return links
 }
@@ -222,9 +223,9 @@ func startXDP(objs counterObjects, iface *net.Interface, links []link.Link) []li
 
 	links = append(links, l)
 
-	log.Printf("Starting on interface %q using XDP (eXpress Data Path) eBPF mode, listening for %v",
-		*ifname, durafmt.Parse(*timeout))
+	log.Printf("Starting on interface %q using XDP (eXpress Data Path) eBPF mode", *ifname)
 	log.Printf("Due to XDP mode, egress statistics are not available. Upon program exit, interface reset may happen on some cards.")
+
 	return links
 }
 
@@ -247,7 +248,7 @@ func startXDP(objs counterObjects, iface *net.Interface, links []link.Link) []li
 //
 //	[]link.Link: The updated slice of link.Link objects, now including the newly
 //	             attached TC links.
-func startTC(objs counterObjects, iface *net.Interface, links []link.Link) {
+func startTC(objs counterObjects, iface *net.Interface, links []link.Link) []link.Link {
 	var l link.Link
 
 	err := features.HaveProgramType(ebpf.SchedACT)
@@ -284,6 +285,7 @@ func startTC(objs counterObjects, iface *net.Interface, links []link.Link) {
 
 	links = append(links, l)
 
-	log.Printf("Starting on interface %q using TC (Traffic Control) eBPF mode, listening for %v",
-		*ifname, durafmt.Parse(*timeout))
+	log.Printf("Starting on interface %q using TC (Traffic Control) eBPF mode", *ifname)
+
+	return links
 }

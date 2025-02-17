@@ -90,7 +90,7 @@ func drawTUI(objs counterObjects, startTime time.Time) {
 	// navigation
 	naviView := tview.NewTextView().
 		SetTextColor(tcell.ColorYellow)
-	naviView.SetText("Press 'q' or 'x' to exit. Press 'r' or 'l' for a redraw.")
+	naviView.SetText("Use cursor keys to move through the table. Press 'q' or 'x' to exit. Press 'r' or 'l' for a redraw.")
 
 	// grid layout
 	grid := tview.NewGrid().SetRows(2, 0, 2).

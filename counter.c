@@ -744,21 +744,25 @@ int BPF_KPROBE(skb_consume_udp, struct sock *sk, struct sk_buff *skb, int len) {
 }
 
 /**
- * Hook function for kprobe on icmp_send function.
+ * Hook function for kprobe on __icmp_send function.
  *
- * Populates the statkey structure with information from the ICMP packet and
+ * Populates the statkey structure with information from the ICMPv4 packet and
  * the process ID associated with the packet, and updates the packet and byte
  * counters in the packet count map.
  *
- * @param skb pointer to the socket buffer containing the ICMP packet
- * @param type type of ICMP packet
+ * @param skb pointer to the socket buffer containing the ICMPv4 packet
+ * @param type type of ICMPv4 packet
+ * @param code code of ICMPv4 packet
+ * @param info additional information for the ICMPv4 packet
+ * @param opt pointer to the ip_options structure
  *
  * @return 0
  *
  * @throws none
  */
 SEC("kprobe/__icmp_send")
-int BPF_KPROBE(__icmp_send, struct sk_buff *skb, int type) {
+int BPF_KPROBE(__icmp_send, struct sk_buff *skb, __u8 type, __u8 code,
+               __be32 info, const struct ip_options *opt) {
   statkey key;
   __builtin_memset(&key, 0, sizeof(key));
 
@@ -782,13 +786,16 @@ int BPF_KPROBE(__icmp_send, struct sk_buff *skb, int type) {
  *
  * @param skb pointer to the socket buffer containing the ICMPv6 packet
  * @param type type of ICMPv6 packet
+ * @param code code of ICMPv6 packet
+ * @param info additional information for the ICMPv6 packet
  *
  * @return 0
  *
  * @throws none
  */
 SEC("kprobe/icmp6_send")
-int BPF_KPROBE(icmp6_send, struct sk_buff *skb, int type) {
+int BPF_KPROBE(icmp6_send, struct sk_buff *skb, __u8 type, __u8 code,
+               __u32 info) {
   statkey key;
   __builtin_memset(&key, 0, sizeof(key));
 
@@ -811,14 +818,13 @@ int BPF_KPROBE(icmp6_send, struct sk_buff *skb, int type) {
  * counters in the packet count map.
  *
  * @param skb pointer to the socket buffer containing the ICMP packet
- * @param type type of ICMP packet
  *
  * @return 0
  *
  * @throws none
  */
 SEC("kprobe/icmp_rcv")
-int BPF_KPROBE(icmp_rcv, struct sk_buff *skb, int type) {
+int BPF_KPROBE(icmp_rcv, struct sk_buff *skb) {
   statkey key;
   __builtin_memset(&key, 0, sizeof(key));
 
@@ -841,14 +847,13 @@ int BPF_KPROBE(icmp_rcv, struct sk_buff *skb, int type) {
  * counters in the packet count map.
  *
  * @param skb pointer to the socket buffer containing the ICMPv6 packet
- * @param type type of ICMPv6 packet
  *
  * @return 0
  *
  * @throws none
  */
 SEC("kprobe/icmpv6_rcv")
-int BPF_KPROBE(icmpv6_rcv, struct sk_buff *skb, int type) {
+int BPF_KPROBE(icmpv6_rcv, struct sk_buff *skb) {
   statkey key;
   __builtin_memset(&key, 0, sizeof(key));
 
