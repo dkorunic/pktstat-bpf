@@ -33,6 +33,7 @@
 #define s6_addr in6_u.u6_addr8
 #define s6_addr16 in6_u.u6_addr16
 #define s6_addr32 in6_u.u6_addr32
+#define inet_num sk.__sk_common.skc_num
 
 #define ETH_P_IP 0x0800
 #define ETH_P_IPV6 0x86DD
@@ -661,6 +662,98 @@ static inline size_t process_udp_send(struct sk_buff *skb, statkey *key,
 }
 
 /**
+ * Process raw ICMP socket information for IPv4 and populate the key structure.
+ *
+ * @param sk pointer to the socket structure
+ * @param msg pointer to the message header structure containing the packet
+ * @param key pointer to the statkey structure to be populated
+ * @param pid process ID associated with the packet
+ *
+ * This function extracts source and destination IPv4 addresses and ICMP type
+ * and code from the raw socket message. It populates the provided statkey
+ * structure with these details, converting IPv4 addresses to IPv6-mapped
+ * format. The function only processes messages with the ICMP protocol.
+ *
+ * @throws none
+ */
+
+static inline void process_raw_sendmsg4(struct sock *sk, struct msghdr *msg,
+                                        statkey *key, pid_t pid) {
+  struct inet_sock *isk = (struct inet_sock *)sk;
+  struct sockaddr_in *sin = (struct sockaddr_in *)BPF_CORE_READ(msg, msg_name);
+
+  // raw sockets have the protocol number in inet_num
+  __u16 proto = BPF_CORE_READ(isk, inet_num);
+  if (proto != IPPROTO_ICMP) {
+    return;
+  }
+
+  // convert to V4MAPPED address
+  __be32 ip4_src = BPF_CORE_READ(isk, inet_saddr);
+  key->srcip.s6_addr16[5] = bpf_htons(0xffff);
+  __builtin_memcpy(&key->srcip.s6_addr32[3], &ip4_src, sizeof(ip4_src));
+
+  // convert to V4MAPPED address
+  __be32 ip4_dst = BPF_CORE_READ(sin, sin_addr.s_addr);
+  key->dstip.s6_addr16[5] = bpf_htons(0xffff);
+  __builtin_memcpy(&key->dstip.s6_addr32[3], &ip4_dst, sizeof(ip4_dst));
+
+  struct iovec *iov = (struct iovec *)BPF_CORE_READ(msg, msg_iter.__iov);
+  struct icmphdr *icmphdr = (struct icmphdr *)BPF_CORE_READ(iov, iov_base);
+
+  // store ICMP type in src port
+  key->src_port = BPF_CORE_READ(icmphdr, type);
+  // store ICMP code in dst port
+  key->dst_port = BPF_CORE_READ(icmphdr, code);
+
+  key->proto = IPPROTO_ICMP;
+  key->pid = pid;
+}
+
+/**
+ * Process raw ICMP socket information for IPv6 and populate the key structure.
+ *
+ * @param sk pointer to the socket structure
+ * @param msg pointer to the message header structure containing the packet
+ * @param key pointer to the statkey structure to be populated
+ * @param pid process ID associated with the packet
+ *
+ * This function extracts source and destination IPv6 addresses and ICMPv6 type
+ * and code from the raw socket message. It populates the provided statkey
+ * structure with these details. The function only processes messages with the
+ * ICMPv6 protocol.
+ *
+ * @throws none
+ */
+
+static inline void process_raw_sendmsg6(struct sock *sk, struct msghdr *msg,
+                                        statkey *key, pid_t pid) {
+  struct inet_sock *isk = (struct inet_sock *)sk;
+  struct sockaddr_in6 *sin =
+      (struct sockaddr_in6 *)BPF_CORE_READ(msg, msg_name);
+
+  // raw sockets have the protocol number in inet_num
+  __u16 proto = BPF_CORE_READ(isk, inet_num);
+  if (proto != IPPROTO_ICMPV6) {
+    return;
+  }
+
+  BPF_CORE_READ_INTO(&key->srcip, isk, inet_saddr);
+  BPF_CORE_READ_INTO(&key->dstip, sin, sin6_addr);
+
+  struct iovec *iov = (struct iovec *)BPF_CORE_READ(msg, msg_iter.__iov);
+  struct icmp6hdr *icmphdr = (struct icmp6hdr *)BPF_CORE_READ(iov, iov_base);
+
+  // store ICMP type in src port
+  key->src_port = BPF_CORE_READ(icmphdr, icmp6_type);
+  // store ICMP code in dst port
+  key->dst_port = BPF_CORE_READ(icmphdr, icmp6_code);
+
+  key->proto = IPPROTO_ICMPV6;
+  key->pid = pid;
+}
+
+/**
  * Update the packet and byte counters for the given key in the packet count
  * map. If the key is not present, it is inserted with an initial value of 1
  * packet and the given size in bytes. If the key is already present, the
@@ -938,6 +1031,68 @@ int BPF_KPROBE(icmpv6_rcv, struct sk_buff *skb) {
 
   size_t msglen = process_icmp6(skb, &key, pid);
   update_val(&key, msglen);
+
+  return 0;
+}
+
+/**
+ * Hook function for kprobe on raw_sendmsg function.
+ *
+ * Populates the statkey structure with information from the raw IPv4 packet and
+ * the process ID associated with the packet, and updates the packet and byte
+ * counters in the packet count map.
+ *
+ * @param sk pointer to the socket structure
+ * @param msg pointer to the msghdr structure
+ * @param len size of the message
+ *
+ * @return 0
+ *
+ * @throws none
+ */
+SEC("kprobe/raw_sendmsg")
+int BPF_KPROBE(raw_sendmsg, struct sock *sk, struct msghdr *msg, size_t len) {
+  statkey key;
+  __builtin_memset(&key, 0, sizeof(key));
+
+  pid_t pid = bpf_get_current_pid_tgid() & 0xFFFFFFFF;
+  if (pid > 0) {
+    bpf_get_current_comm(&key.comm, sizeof(key.comm));
+  }
+
+  process_raw_sendmsg4(sk, msg, &key, pid);
+  update_val(&key, len);
+
+  return 0;
+}
+
+/**
+ * Hook function for kprobe on rawv6_sendmsg function.
+ *
+ * Populates the statkey structure with information from the raw IPv6 packet and
+ * the process ID associated with the packet, and updates the packet and byte
+ * counters in the packet count map.
+ *
+ * @param sk pointer to the socket structure
+ * @param msg pointer to the msghdr structure
+ * @param len size of the message
+ *
+ * @return 0
+ *
+ * @throws none
+ */
+SEC("kprobe/rawv6_sendmsg")
+int BPF_KPROBE(rawv6_sendmsg, struct sock *sk, struct msghdr *msg, size_t len) {
+  statkey key;
+  __builtin_memset(&key, 0, sizeof(key));
+
+  pid_t pid = bpf_get_current_pid_tgid() & 0xFFFFFFFF;
+  if (pid > 0) {
+    bpf_get_current_comm(&key.comm, sizeof(key.comm));
+  }
+
+  process_raw_sendmsg6(sk, msg, &key, pid);
+  update_val(&key, len);
 
   return 0;
 }
