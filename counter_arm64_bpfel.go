@@ -75,8 +75,6 @@ type counterProgramSpecs struct {
 	IcmpRcv         *ebpf.ProgramSpec `ebpf:"icmp_rcv"`
 	Icmpv6Rcv       *ebpf.ProgramSpec `ebpf:"icmpv6_rcv"`
 	IpSendSkb       *ebpf.ProgramSpec `ebpf:"ip_send_skb"`
-	RawSendmsg      *ebpf.ProgramSpec `ebpf:"raw_sendmsg"`
-	Rawv6Sendmsg    *ebpf.ProgramSpec `ebpf:"rawv6_sendmsg"`
 	SkbConsumeUdp   *ebpf.ProgramSpec `ebpf:"skb_consume_udp"`
 	TcCountPackets  *ebpf.ProgramSpec `ebpf:"tc_count_packets"`
 	TcpCleanupRbuf  *ebpf.ProgramSpec `ebpf:"tcp_cleanup_rbuf"`
@@ -141,8 +139,6 @@ type counterPrograms struct {
 	IcmpRcv         *ebpf.Program `ebpf:"icmp_rcv"`
 	Icmpv6Rcv       *ebpf.Program `ebpf:"icmpv6_rcv"`
 	IpSendSkb       *ebpf.Program `ebpf:"ip_send_skb"`
-	RawSendmsg      *ebpf.Program `ebpf:"raw_sendmsg"`
-	Rawv6Sendmsg    *ebpf.Program `ebpf:"rawv6_sendmsg"`
 	SkbConsumeUdp   *ebpf.Program `ebpf:"skb_consume_udp"`
 	TcCountPackets  *ebpf.Program `ebpf:"tc_count_packets"`
 	TcpCleanupRbuf  *ebpf.Program `ebpf:"tcp_cleanup_rbuf"`
@@ -157,8 +153,6 @@ func (p *counterPrograms) Close() error {
 		p.IcmpRcv,
 		p.Icmpv6Rcv,
 		p.IpSendSkb,
-		p.RawSendmsg,
-		p.Rawv6Sendmsg,
 		p.SkbConsumeUdp,
 		p.TcCountPackets,
 		p.TcpCleanupRbuf,
