@@ -159,8 +159,6 @@ func (p *counterPrograms) Close() error {
 		p.IcmpRcv,
 		p.Icmpv6Rcv,
 		p.IpSendSkb,
-		p.RawSendmsg,
-		p.Rawv6Sendmsg,
 		p.SkbConsumeUdp,
 		p.TcCountPackets,
 		p.TcpCleanupRbuf,
