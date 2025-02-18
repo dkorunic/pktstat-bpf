@@ -587,6 +587,7 @@ static inline size_t process_udp_send(struct sk_buff *skb, statkey *key,
   return msglen;
 }
 
+#if 0
 /**
  * Process raw ICMP socket information for IPv4 and populate the key structure.
  *
@@ -635,7 +636,9 @@ static inline void process_raw_sendmsg4(struct sock *sk, struct msghdr *msg,
   key->proto = IPPROTO_ICMP;
   key->pid = pid;
 }
+#endif
 
+#if 0
 /**
  * Process raw ICMP socket information for IPv6 and populate the key structure.
  *
@@ -678,6 +681,7 @@ static inline void process_raw_sendmsg6(struct sock *sk, struct msghdr *msg,
   key->proto = IPPROTO_ICMPV6;
   key->pid = pid;
 }
+#endif
 
 /**
  * Update the packet and byte counters for the given key in the packet count
@@ -961,6 +965,7 @@ int BPF_KPROBE(icmpv6_rcv, struct sk_buff *skb) {
   return 0;
 }
 
+#if 0
 /**
  * Hook function for kprobe on raw_sendmsg function.
  *
@@ -991,7 +996,9 @@ int BPF_KPROBE(raw_sendmsg, struct sock *sk, struct msghdr *msg, size_t len) {
 
   return 0;
 }
+#endif
 
+#if 0
 /**
  * Hook function for kprobe on rawv6_sendmsg function.
  *
@@ -1022,5 +1029,6 @@ int BPF_KPROBE(rawv6_sendmsg, struct sock *sk, struct msghdr *msg, size_t len) {
 
   return 0;
 }
+#endif
 
 char __license[] SEC("license") = "Dual MIT/GPL";

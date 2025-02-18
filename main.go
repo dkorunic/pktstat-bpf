@@ -79,8 +79,6 @@ func main() {
 			{kprobe: "icmp6_send", prog: objs.Icmp6Send},
 			{kprobe: "icmp_rcv", prog: objs.IcmpRcv},
 			{kprobe: "icmpv6_rcv", prog: objs.Icmpv6Rcv},
-			//{kprobe: "raw_sendmsg", prog: objs.RawSendmsg},
-			//{kprobe: "rawv6_sendmsg", prog: objs.Rawv6Sendmsg},
 		}
 
 		links = startKProbes(hooks, links)
