@@ -249,6 +249,6 @@ func updateStatsTable(app *tview.Application, table *tview.Table, tableSort *fun
 		}
 
 		app.Draw()
-		time.Sleep(defaultRefresh)
+		time.Sleep(*refresh)
 	}
 }
