@@ -118,7 +118,7 @@ func main() {
 
 		<-c1.Done()
 
-		m, err := processMap(objs.PktCount, startTime)
+		m, err := processMap(objs.PktCount, startTime, bitrateSort)
 		if err != nil {
 			log.Fatalf("Error reading eBPF map: %v", err)
 		}

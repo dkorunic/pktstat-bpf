@@ -45,7 +45,7 @@ const (
 // Parameters:
 //
 //	m *ebpf.Map - the eb
-func processMap(m *ebpf.Map, start time.Time) ([]statEntry, error) {
+func processMap(m *ebpf.Map, start time.Time, sortFunc func([]statEntry)) ([]statEntry, error) {
 	var (
 		key counterStatkey
 		val counterStatvalue
@@ -71,11 +71,64 @@ func processMap(m *ebpf.Map, start time.Time) ([]statEntry, error) {
 		})
 	}
 
+	sortFunc(stats)
+
+	return stats, iter.Err()
+}
+
+// bitrateSort sorts a slice of statEntry objects by their Bitrate field in descending order.
+//
+// Parameters:
+//
+//	stats []statEntry - the slice of statEntry objects to be sorted
+func bitrateSort(stats []statEntry) {
 	sort.Slice(stats, func(i, j int) bool {
 		return stats[i].Bitrate > stats[j].Bitrate
 	})
+}
 
-	return stats, iter.Err()
+// packetSort sorts a slice of statEntry objects by their Packets field in descending order.
+//
+// Parameters:
+//
+//	stats []statEntry - the slice of statEntry objects to be sorted
+func packetSort(stats []statEntry) {
+	sort.Slice(stats, func(i, j int) bool {
+		return stats[i].Packets > stats[j].Packets
+	})
+}
+
+// bytesSort sorts a slice of statEntry objects by their Bytes field in descending order.
+//
+// Parameters:
+//
+//	stats []statEntry - the slice of statEntry objects to be sorted
+func bytesSort(stats []statEntry) {
+	sort.Slice(stats, func(i, j int) bool {
+		return stats[i].Bytes > stats[j].Bytes
+	})
+}
+
+// srcIPSort sorts a slice of statEntry objects by their SrcIP field in descending order.
+//
+// Parameters:
+//
+//	stats []statEntry - the slice of statEntry objects to be sorted
+func srcIPSort(stats []statEntry) {
+	sort.Slice(stats, func(i, j int) bool {
+		return stats[i].SrcIP.Compare(stats[j].SrcIP) < 0
+	})
+}
+
+// dstIPSort sorts a slice of statEntry objects by their DstIP field in descending order.
+//
+// Parameters:
+//
+//	stats []statEntry - the slice of statEntry objects to be sorted
+func dstIPSort(stats []statEntry) {
+	sort.Slice(stats, func(i, j int) bool {
+		return stats[i].DstIP.Compare(stats[j].DstIP) < 0
+	})
 }
 
 // formatBitrate formats the bitrate value into a human-readable string.
