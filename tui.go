@@ -50,6 +50,7 @@ import (
 // do nothing.
 func drawTUI(objs counterObjects, startTime time.Time) {
 	app := tview.NewApplication()
+	tableSort := bitrateSort
 
 	// packet statistics
 	statsTable := tview.NewTable().
@@ -64,9 +65,25 @@ func drawTUI(objs counterObjects, startTime time.Time) {
 
 	statsTable.SetInputCapture(func(event *tcell.EventKey) *tcell.EventKey {
 		switch event.Rune() {
+		case '0':
+			tableSort = bitrateSort
+			statsTable.Select(0, 0)
+		case '1':
+			tableSort = packetSort
+			statsTable.Select(0, 0)
+		case '2':
+			tableSort = bytesSort
+			statsTable.Select(0, 0)
+		case '3':
+			tableSort = srcIPSort
+			statsTable.Select(0, 0)
+		case '4':
+			tableSort = dstIPSort
+			statsTable.Select(0, 0)
 		case 'q', 'x', 'Q', 'X':
 			app.Stop()
-		case 'r', 'R', 'l', 'L':
+		case 'r', 'R':
+			statsTable.Select(0, 0)
 			app.ForceDraw()
 		}
 
@@ -90,16 +107,16 @@ func drawTUI(objs counterObjects, startTime time.Time) {
 	// navigation
 	naviView := tview.NewTextView().
 		SetTextColor(tcell.ColorYellow)
-	naviView.SetText("Use cursor keys to move through the table. Press 'q' or 'x' to exit. Press 'r' or 'l' for a redraw.")
+	naviView.SetText("Use cursor keys to move through the table. Press 'q' or 'x' to exit, 'r' for a jump to the beginning and a redraw.\nPress '0' for bitrate desc sort, '1' for packet desc sort, '2' for bytes desc sort, '3' for source IP asc sort, '4' for destination IP asc sort.")
 
 	// grid layout
-	grid := tview.NewGrid().SetRows(2, 0, 2).
+	grid := tview.NewGrid().SetRows(2, 0, 3).
 		AddItem(infoView, 0, 0, 1, 1, 0, 0, false).
 		AddItem(statsTable, 1, 0, 1, 1, 0, 0, true).
 		AddItem(naviView, 2, 0, 1, 1, 0, 0, false)
 
 	// start the update loop
-	go updateStatsTable(app, statsTable, objs, startTime)
+	go updateStatsTable(app, statsTable, &tableSort, objs, startTime)
 
 	_ = app.SetRoot(grid, true).
 		SetFocus(statsTable).
@@ -125,7 +142,9 @@ func drawTUI(objs counterObjects, startTime time.Time) {
 //
 // Note that the table is cleared and recreated on each iteration, so any cell
 // attributes are lost on each iteration.
-func updateStatsTable(app *tview.Application, table *tview.Table, objs counterObjects, startTime time.Time) {
+func updateStatsTable(app *tview.Application, table *tview.Table, tableSort *func(stats []statEntry),
+	objs counterObjects, startTime time.Time,
+) {
 	headers := []string{
 		"bitrate", // column 0
 		"packets", // column 1
@@ -153,7 +172,7 @@ func updateStatsTable(app *tview.Application, table *tview.Table, objs counterOb
 			})
 		}
 
-		m, _ := processMap(objs.PktCount, startTime)
+		m, _ := processMap(objs.PktCount, startTime, *tableSort)
 
 		for i, v := range m {
 			// populate bitrate, packets, bytes and proto
