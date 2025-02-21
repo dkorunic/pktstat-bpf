@@ -111,6 +111,7 @@ func drawTUI(objs counterObjects, startTime time.Time) {
 	// navigation
 	naviView := tview.NewTextView().
 		SetTextColor(tcell.ColorDimGray).
+		SetWrap(true).
 		SetWordWrap(true).
 		SetDynamicColors(true)
 	naviView.SetText(naviText)
