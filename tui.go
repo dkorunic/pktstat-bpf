@@ -30,6 +30,10 @@ import (
 	"github.com/rivo/tview"
 )
 
+const (
+	naviText = `[white]↑/k[-] up • [white]↓/j[-] down • [white]q/x[-] exit • [white]r[-] redraw & jump on top • [white]0[-] sort by bitrate • [white]1[-] sort by packets • [white]2[-] sort by bytes • [white]3[-] sort by source IP • [white]4[-] sort by dest IP`
+)
+
 // drawTUI displays a TUI (text-based user interface) with a table displaying
 // packet statistics. The TUI is updated in real time with the latest packet
 // statistics. The table has the following columns:
@@ -59,7 +63,7 @@ func drawTUI(objs counterObjects, startTime time.Time) {
 		Select(0, 0).
 		SetFixed(1, 1)
 
-	statsTable.SetTitle("Packet statistics").
+	statsTable.SetTitle("Network traffic monitor").
 		SetTitleAlign(tview.AlignLeft).
 		SetBorder(true)
 
@@ -106,8 +110,10 @@ func drawTUI(objs counterObjects, startTime time.Time) {
 
 	// navigation
 	naviView := tview.NewTextView().
-		SetTextColor(tcell.ColorYellow)
-	naviView.SetText("Use cursor keys to move through the table. Press 'q' or 'x' to exit, 'r' for a jump to the beginning and a redraw.\nPress '0' for bitrate desc sort, '1' for packet desc sort, '2' for bytes desc sort, '3' for source IP asc sort, '4' for destination IP asc sort.")
+		SetTextColor(tcell.ColorDimGray).
+		SetWordWrap(true).
+		SetDynamicColors(true)
+	naviView.SetText(naviText)
 
 	// grid layout
 	grid := tview.NewGrid().SetRows(2, 0, 3).
