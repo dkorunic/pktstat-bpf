@@ -29,6 +29,8 @@ The author of this tool has given a eBPF talk (Features, capabilities and implem
 
 ## Requirements
 
+Hard requirement for eBPF program is Linux kernel **4.10** with BTF enabled and in such older kernels most likely only supported mode will be KProbes (RHEL/CentOS 8, Debian 10). From **5.9** kernel onwards (RHEL/CentOS 9, Debian 11, Ubuntu 20.04) XDP mode is supported. TC might even work on **5.14** (RHEL/CentOS 9) depending if the distribution has backported TC eBPF patches. In all recent distributions (RHEL/CentOS 9, Debian 12, Ubuntu 24.04), all eBPF modes are fully supported.
+
 Loading eBPF program typically requires root privileges and in our specific case pointer arithmetics in eBPF code causes [eBPF verifier](https://docs.kernel.org/bpf/verifier.html) to explicitly deny non-root use. Kernel has to be with BTF enabled and some features require more recent kernels, as shown in the table below.
 
 Typically BPF JIT (Just in Time compiler) should be enabled for best performance (and most Linux distributions have this enabled by default):
