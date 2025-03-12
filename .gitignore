@@ -40,3 +40,6 @@ token.json
 
 ## Usual macOS cruft ###
 .DS_Store
+
+## Editor config
+.editorconfig

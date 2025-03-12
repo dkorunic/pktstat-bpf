@@ -267,7 +267,7 @@ static inline void process_eth(void *data, void *data_end, __u64 pkt_len) {
     break;
   }
   default:
-      bpf_printk("wrong packet type: %d", eth->h_proto);
+    bpf_printk("wrong packet type: %d", eth->h_proto);
     return;
   }
 
@@ -323,9 +323,8 @@ static inline void process_cgroup_skb(struct __sk_buff *skb) {
     break;
   }
   default:
-      bpf_printk("wrong packet type: %d", skb->protocol);
+    bpf_printk("wrong packet type: %d", skb->protocol);
     return;
-
   }
 
   // lookup value in hash
