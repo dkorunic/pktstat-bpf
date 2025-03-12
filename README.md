@@ -15,9 +15,11 @@ At the end of the execution program will display per-IP and per-protocol statist
 
 Program consists of the [eBPF code in C](counter.c) and the pure-Go userland Golang program that parses and outputs final IP/port/protocol/bitrate statistics. Go part of the program uses wonderful [cillium/ebpf](https://github.com/cilium/ebpf) library to load and run eBPF program, interfacing with eBPF map.
 
-By default eBPF component uses **TC** (Traffic Control) eBPF hooks with TCX attaching requiring at minimum Linux kernel **v6.6** for both ingress and egress traffic statistics for TCP, UDP, ICMPv4 and ICMPv6. It can also switch to even faster [XDP](https://github.com/xdp-project/xdp-tutorial) (eXpress Data Path) hook but with a consequence of **losing egress statistics** since **XDP** works only in ingress path. XDP mode due to XDP program to network interface attaching calls requires at minimum Linux kernel **v5.9**. Some distributions might have backported XDP/TC patches (notable example is Red Hat Enterprise Linux kernel) and eBPF program might work on older kernels too.
+By default eBPF component uses **TC** (Traffic Control) eBPF hooks with TCX attaching requiring at minimum Linux kernel **v6.6** for both ingress and egress traffic statistics for TCP, UDP, ICMPv4 and ICMPv6. It can also switch to even faster [XDP](https://github.com/xdp-project/xdp-tutorial) (eXpress Data Path) hook but with a consequence of **losing egress statistics** since **XDP** works only in ingress path. XDP mode due to XDP program to network interface attaching calls requires at minimum Linux kernel **v5.9**. Some distributions might have backported XDP/TC patches (notable example is Red Hat Enterprise Linux kernel) and eBPF program might work on older kernels too (see requirements for more info).
 
 Alternatively it can use **KProbes** to monitor TCP, UDP, ICMPv4 and ICMPv6 communication throughout all containers, K8s pods, translations and forwards and display process ID as well as process name, if the traffic was being sent or delivered to userspace application. KProbes traditionally work the slowest, being closest to the userspace -- but they bring sometimes useful process information. KProbes work also with much older Linux kernels as well, but the hard-dependancy is a [BTF-enabled](https://docs.ebpf.io/concepts/btf/) kernel.
+
+In case that you need to monitor just a specific **CGroup**, it is possible as well and monitoring both ingress and egress traffic is supported.
 
 ![Demo](demo.gif)
 
@@ -47,8 +49,9 @@ The following table maps features, requirements and expected performance for des
 | --------------------------------------------------- | ------- | ------ | -------------- | ---------------- | --------------- | ----------------- |
 | Generic [PCAP](https://github.com/dkorunic/pktstat) | Yes     | Yes    | Low            | No               | Any             | No                |
 | [AF_PACKET](https://github.com/dkorunic/pktstat)    | Yes     | Yes    | Medium         | No               | v2.2            | No                |
-| KProbes                                             | Yes     | Yes    | Medium+        | **Yes**          | v2.6            | No                |
-| TC                                                  | Yes     | Yes    | **High**       | No               | v6.6            | No                |
+| KProbes                                             | Yes     | Yes    | Medium+        | **Yes**          | v4.1            | No                |
+| CGroup (SKB)                                        | Yes     | Yes    | Medium+        | No               | v4.10           | No                |
+| TC (SchedACT)                                       | Yes     | Yes    | **High**       | No               | v6.6            | No                |
 | XDP Generic                                         | Yes     | **No** | **High**       | No               | v5.9            | No                |
 | XDP Native                                          | Yes     | **No** | **Very high**  | No               | v5.9            | No                |
 | XDP Offloaded                                       | Yes     | **No** | **Wire speed** | No               | v5.9            | **Yes**           |
@@ -67,6 +70,7 @@ NAME
 FLAGS
   -?, --help               display help
   -j, --json               if true, output in JSON format
+  -c, --cgroup STRING      the path to a CGroup V2 to measure statistics on
   -x, --xdp                if true, use XDP instead of TC (this disables egress statistics)
   -k, --kprobes            if true, use KProbes for per-proces TCP/UDP statistics
   -g, --tui                if true, enable TUI
@@ -90,6 +94,8 @@ With `--xdp` program will switch from TC eBPF mode to XDP eBPF mode, working in 
 Additionally it is possible to change XDP attach mode with `--xdp_mode` from `auto` (best-effort between native and generic) to `native` or `offload`, for NIC drivers that support XDP or even NICs that have hardware XDP support.
 
 With `--kprobes` program will switch to Kprobe mode and track TCP and UDP traffic per process. Performance will be even more degraded compared to TC and XDP mode, but all per-PID traffic will be visible, inside of all Cgroups, containers, K8s pods etc.
+
+With `--cgroup` parameter with path to the CGroup it is possible to measure ingress and egress traffic for a specific CGroup.
 
 ## Star History
 
