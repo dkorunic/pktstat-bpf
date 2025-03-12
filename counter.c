@@ -19,7 +19,7 @@
 // OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 // SOFTWARE.
 
-// go:build ignore
+//go:build ignore
 
 #include "vmlinux.h"
 
@@ -44,6 +44,7 @@
 
 #define OK 1
 #define NOK 0
+#define ALLOW_PKT 1
 
 // Map key struct for IP traffic
 typedef struct statkey_t {
@@ -236,6 +237,7 @@ static inline void process_eth(void *data, void *data_end, __u64 pkt_len) {
 
   // validate Ethernet size
   if ((void *)eth + sizeof(*eth) > data_end) {
+    bpf_printk("size validation failure");
     return;
   }
 
@@ -264,7 +266,65 @@ static inline void process_eth(void *data, void *data_end, __u64 pkt_len) {
     break;
   }
   default:
+      bpf_printk("wrong packet type: %d", eth->h_proto);
     return;
+  }
+
+  // lookup value in hash
+  statvalue *val = (statvalue *)bpf_map_lookup_elem(&pkt_count, &key);
+  if (val) {
+    // atomic XADD, doesn't need bpf_spin_lock()
+    __sync_fetch_and_add(&val->packets, 1);
+    __sync_fetch_and_add(&val->bytes, pkt_len);
+  } else {
+    statvalue initval = {.packets = 1, .bytes = pkt_len};
+
+    bpf_map_update_elem(&pkt_count, &key, &initval, BPF_NOEXIST);
+  }
+}
+
+/**
+ * Process SKB as it is seen by the cgroup, which is without the ethernet
+ * headers
+ *
+ * @param skb The CGroup skb
+ *
+ * @return none
+ *
+ * @throws none
+ */
+static inline void process_cgroup_skb(struct __sk_buff *skb) {
+  void *data = (void *)(long)skb->data;
+  void *data_end = (void *)(long)skb->data_end;
+  __u64 pkt_len = skb->len;
+
+  // initialize key
+  statkey key;
+  __builtin_memset(&key, 0, sizeof(key));
+
+  switch (bpf_ntohs(skb->protocol)) {
+  case ETH_P_IP: {
+    struct iphdr *ip4 = data;
+
+    if (process_ip4(ip4, data_end, &key) == NOK) {
+      return;
+    }
+
+    break;
+  }
+  case ETH_P_IPV6: {
+    struct ipv6hdr *ip6 = data;
+
+    if (process_ip6(ip6, data_end, &key) == NOK) {
+      return;
+    }
+
+    break;
+  }
+  default:
+      bpf_printk("wrong packet type: %d", skb->protocol);
+    return;
+
   }
 
   // lookup value in hash
@@ -349,6 +409,20 @@ int tc_count_packets(struct __sk_buff *skb) {
   tc_process_packet(skb);
 
   return TC_ACT_UNSPEC;
+}
+
+SEC("cgroup_skb/ingress")
+int cgroup_skb_ingress(struct __sk_buff *skb) {
+  process_cgroup_skb(skb);
+
+  return ALLOW_PKT;
+}
+
+SEC("cgroup_skb/egress")
+int cgroup_skb_egress(struct __sk_buff *skb) {
+  process_cgroup_skb(skb);
+
+  return ALLOW_PKT;
 }
 
 /**

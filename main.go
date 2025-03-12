@@ -68,6 +68,8 @@ func main() {
 	}()
 
 	switch {
+	case *useCGroup != "":
+		links = startCgroup(objs, *useCGroup, links)
 	// KProbes w/ PID tracking
 	case *useKProbes:
 		hooks := []kprobeHook{
@@ -286,6 +288,43 @@ func startTC(objs counterObjects, iface *net.Interface, links []link.Link) []lin
 	links = append(links, l)
 
 	log.Printf("Starting on interface %q using TC (Traffic Control) eBPF mode", *ifname)
+
+	return links
+}
+
+func startCgroup(objs counterObjects, cgroupPath string, links []link.Link) []link.Link {
+	var l link.Link
+
+	err := features.HaveProgramType(ebpf.CGroupSKB)
+	if errors.Is(err, ebpf.ErrNotSupported) {
+		log.Fatalf("CgroupSKB not supported on this kernel")
+	}
+
+	if err != nil {
+		log.Fatalf("Error checking CGroupSKB support: %v", err)
+	}
+
+	l, err = link.AttachCgroup(link.CgroupOptions{
+		Program: objs.CgroupSkbIngress,
+		Attach:  ebpf.AttachCGroupInetIngress,
+		Path:    cgroupPath,
+	})
+	if err != nil {
+		log.Fatalf("Error attaching CgroupSkbIngress to %s: %v", cgroupPath, err)
+	}
+
+	l, err = link.AttachCgroup(link.CgroupOptions{
+		Program: objs.CgroupSkbEgress,
+		Attach:  ebpf.AttachCGroupInetEgress,
+		Path:    cgroupPath,
+	})
+	if err != nil {
+		log.Fatalf("Error attaching CgroupSkbEgress to %s: %v", cgroupPath, err)
+	}
+
+	links = append(links, l)
+
+	log.Printf("Starting on CGroup %s", cgroupPath)
 
 	return links
 }
