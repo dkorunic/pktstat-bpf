@@ -19,8 +19,7 @@ By default eBPF component uses **TC** (Traffic Control) eBPF hooks with TCX atta
 
 Alternatively it can use **KProbes** to monitor TCP, UDP, ICMPv4 and ICMPv6 communication throughout all containers, K8s pods, translations and forwards and display process ID as well as process name, if the traffic was being sent or delivered to userspace application. KProbes traditionally work the slowest, being closest to the userspace -- but they bring sometimes useful process information. KProbes work also with much older Linux kernels as well, but the hard-dependancy is a [BTF-enabled](https://docs.ebpf.io/concepts/btf/) kernel.
 
-In case that you need to monitor just a specific **CGroup**, it is possible as well and monitoring both ingress and egress traffic is supported.
-
+In case that you need to monitor just a specific **CGroup**, it is possible as well and monitoring both ingress and egress traffic is supported. You can also monitor all traffic by attaching to the root CGroup (e.g. `/sys/fs/cgroup`). Process tracking is possible when using CGroups, but only for traffic where pktstat-bpf observed the socket creation. 
 ![Demo](demo.gif)
 
 ## Talk
@@ -50,7 +49,7 @@ The following table maps features, requirements and expected performance for des
 | Generic [PCAP](https://github.com/dkorunic/pktstat) | Yes     | Yes    | Low            | No               | Any             | No                |
 | [AF_PACKET](https://github.com/dkorunic/pktstat)    | Yes     | Yes    | Medium         | No               | v2.2            | No                |
 | KProbes                                             | Yes     | Yes    | Medium+        | **Yes**          | v4.1            | No                |
-| CGroup (SKB)                                        | Yes     | Yes    | Medium+        | No               | v4.10           | No                |
+| CGroup (SKB)                                        | Yes     | Yes    | Medium+        | Partial          | v4.10           | No                |
 | TC (SchedACT)                                       | Yes     | Yes    | **High**       | No               | v6.6            | No                |
 | XDP Generic                                         | Yes     | **No** | **High**       | No               | v5.9            | No                |
 | XDP Native                                          | Yes     | **No** | **Very high**  | No               | v5.9            | No                |

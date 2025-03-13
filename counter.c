@@ -46,6 +46,7 @@
 #define OK 1
 #define NOK 0
 #define ALLOW_PKT 1
+#define ALLOW_SK 1
 
 // Map key struct for IP traffic
 typedef struct statkey_t {
@@ -71,6 +72,18 @@ struct {
   __type(key, statkey);
   __type(value, statvalue);
 } pkt_count SEC(".maps");
+
+typedef struct sockinfo_t {
+  __u8 comm[TASK_COMM_LEN];
+  pid_t pid;
+} sockinfo;
+
+struct {
+  __uint(type, BPF_MAP_TYPE_LRU_HASH);
+  __uint(max_entries, MAX_ENTRIES);
+  __type(key, __u64);
+  __type(value, sockinfo);
+} sock_info SEC(".maps");
 
 // IPv4-mapped IPv6 address prefix (for V4MAPPED conversion)
 static const __u8 ip4in6[] = {0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0xff, 0xff};
@@ -327,7 +340,13 @@ static inline void process_cgroup_skb(struct __sk_buff *skb) {
     return;
   }
 
-  // lookup value in hash
+  __u64 cookie = bpf_get_socket_cookie(skb);
+  sockinfo *ski = bpf_map_lookup_elem(&sock_info, &cookie);
+  if (ski) {
+    key.pid = ski->pid;
+    __builtin_memcpy(key.comm, ski->comm, sizeof(key.comm));
+  }
+
   statvalue *val = (statvalue *)bpf_map_lookup_elem(&pkt_count, &key);
   if (val) {
     // atomic XADD, doesn't need bpf_spin_lock()
@@ -409,6 +428,21 @@ int tc_count_packets(struct __sk_buff *skb) {
   tc_process_packet(skb);
 
   return TC_ACT_UNSPEC;
+}
+
+SEC("cgroup/sock_create")
+int cgroup_sock_create(struct bpf_sock *sk) {
+  __u64 cookie = bpf_get_socket_cookie(sk);
+  sockinfo ski = {
+    .pid = bpf_get_current_pid_tgid(),
+    .comm = {0},
+  };
+
+  bpf_get_current_comm(ski.comm, sizeof(ski.comm));
+
+  bpf_map_update_elem(&sock_info, &cookie, &ski, BPF_ANY);
+
+  return ALLOW_SK;
 }
 
 SEC("cgroup_skb/ingress")

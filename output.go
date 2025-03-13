@@ -186,6 +186,16 @@ func outputPlain(m []statEntry) string {
 			}
 		}
 
+		if *useCGroup != "" {
+			if v.Pid > 0 {
+				sb.WriteString(fmt.Sprintf(", pid: %d", v.Pid))
+			}
+
+			if v.Comm != "" {
+				sb.WriteString(fmt.Sprintf(", comm: %v", v.Comm))
+			}
+		}
+
 		sb.WriteString("\n")
 	}
 
