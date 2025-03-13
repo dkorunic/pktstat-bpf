@@ -434,8 +434,8 @@ SEC("cgroup/sock_create")
 int cgroup_sock_create(struct bpf_sock *sk) {
   __u64 cookie = bpf_get_socket_cookie(sk);
   sockinfo ski = {
-    .pid = bpf_get_current_pid_tgid(),
-    .comm = {0},
+      .pid = bpf_get_current_pid_tgid(),
+      .comm = {0},
   };
 
   bpf_get_current_comm(ski.comm, sizeof(ski.comm));
