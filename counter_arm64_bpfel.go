@@ -12,6 +12,11 @@ import (
 	"github.com/cilium/ebpf"
 )
 
+type counterSockinfo struct {
+	Comm [16]uint8
+	Pid  int32
+}
+
 type counterStatkey struct {
 	Srcip   struct{ In6U struct{ U6Addr8 [16]uint8 } }
 	Dstip   struct{ In6U struct{ U6Addr8 [16]uint8 } }
@@ -73,6 +78,7 @@ type counterProgramSpecs struct {
 	IcmpSend         *ebpf.ProgramSpec `ebpf:"__icmp_send"`
 	CgroupSkbEgress  *ebpf.ProgramSpec `ebpf:"cgroup_skb_egress"`
 	CgroupSkbIngress *ebpf.ProgramSpec `ebpf:"cgroup_skb_ingress"`
+	CgroupSockCreate *ebpf.ProgramSpec `ebpf:"cgroup_sock_create"`
 	Icmp6Send        *ebpf.ProgramSpec `ebpf:"icmp6_send"`
 	IcmpRcv          *ebpf.ProgramSpec `ebpf:"icmp_rcv"`
 	Icmpv6Rcv        *ebpf.ProgramSpec `ebpf:"icmpv6_rcv"`
@@ -89,6 +95,7 @@ type counterProgramSpecs struct {
 // It can be passed ebpf.CollectionSpec.Assign.
 type counterMapSpecs struct {
 	PktCount *ebpf.MapSpec `ebpf:"pkt_count"`
+	SockInfo *ebpf.MapSpec `ebpf:"sock_info"`
 }
 
 // counterVariableSpecs contains global variables before they are loaded into the kernel.
@@ -118,11 +125,13 @@ func (o *counterObjects) Close() error {
 // It can be passed to loadCounterObjects or ebpf.CollectionSpec.LoadAndAssign.
 type counterMaps struct {
 	PktCount *ebpf.Map `ebpf:"pkt_count"`
+	SockInfo *ebpf.Map `ebpf:"sock_info"`
 }
 
 func (m *counterMaps) Close() error {
 	return _CounterClose(
 		m.PktCount,
+		m.SockInfo,
 	)
 }
 
@@ -139,6 +148,7 @@ type counterPrograms struct {
 	IcmpSend         *ebpf.Program `ebpf:"__icmp_send"`
 	CgroupSkbEgress  *ebpf.Program `ebpf:"cgroup_skb_egress"`
 	CgroupSkbIngress *ebpf.Program `ebpf:"cgroup_skb_ingress"`
+	CgroupSockCreate *ebpf.Program `ebpf:"cgroup_sock_create"`
 	Icmp6Send        *ebpf.Program `ebpf:"icmp6_send"`
 	IcmpRcv          *ebpf.Program `ebpf:"icmp_rcv"`
 	Icmpv6Rcv        *ebpf.Program `ebpf:"icmpv6_rcv"`
@@ -155,6 +165,7 @@ func (p *counterPrograms) Close() error {
 		p.IcmpSend,
 		p.CgroupSkbEgress,
 		p.CgroupSkbIngress,
+		p.CgroupSockCreate,
 		p.Icmp6Send,
 		p.IcmpRcv,
 		p.Icmpv6Rcv,

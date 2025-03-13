@@ -305,6 +305,15 @@ func startCgroup(objs counterObjects, cgroupPath string, links []link.Link) []li
 	}
 
 	l, err = link.AttachCgroup(link.CgroupOptions{
+		Program: objs.CgroupSockCreate,
+		Attach:  ebpf.AttachCGroupInetSockCreate,
+		Path:    cgroupPath,
+	})
+	if err != nil {
+		log.Fatalf("Error attaching CgroupSockCreate to %s: %v", cgroupPath, err)
+	}
+
+	l, err = link.AttachCgroup(link.CgroupOptions{
 		Program: objs.CgroupSkbIngress,
 		Attach:  ebpf.AttachCGroupInetIngress,
 		Path:    cgroupPath,

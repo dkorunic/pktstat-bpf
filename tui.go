@@ -98,6 +98,8 @@ func drawTUI(objs counterObjects, startTime time.Time) {
 	infoView := tview.NewTextView().
 		SetTextColor(tcell.ColorYellow)
 	switch {
+	case *useCGroup != "":
+		infoView.SetText("CGroup eBPF mode w/ partial PID and comm tracking")
 	case *useKProbes:
 		infoView.SetText("KProbes eBPF mode w/ PID and comm tracking")
 	case *useXDP:
@@ -244,6 +246,15 @@ func updateStatsTable(app *tview.Application, table *tview.Table, tableSort *fun
 				table.SetCell(i+1, 9, tview.NewTableCell(v.Comm).
 					SetTextColor(tcell.ColorWhite).
 					SetExpansion(1))
+			} else if *useCGroup != "" && v.Pid > 0 && v.Comm != "" {
+				table.SetCell(i+1, 8, tview.NewTableCell(strconv.FormatInt(int64(v.Pid), 10)).
+					SetTextColor(tcell.ColorWhite).
+					SetExpansion(1))
+
+				table.SetCell(i+1, 9, tview.NewTableCell(v.Comm).
+					SetTextColor(tcell.ColorWhite).
+					SetExpansion(1))
+
 			} else {
 				table.SetCell(i+1, 8, tview.NewTableCell("").
 					SetTextColor(tcell.ColorWhite).
