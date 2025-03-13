@@ -235,14 +235,14 @@ static inline int process_ip6(struct ipv6hdr *ip6, void *data_end,
 }
 
 /**
- * Process the Ethernet header and extract relevant information to populate
- * the key.
+ * Process an Ethernet packet and populate the key with the relevant
+ * information.
  *
- * @param data pointer to the start of the Ethernet header
+ * @param data pointer to the start of the packet data
  * @param data_end pointer to the end of the packet data
  * @param pkt_len length of the packet
  *
- * @return none
+ * @return void
  *
  * @throws none
  */
@@ -251,7 +251,7 @@ static inline void process_eth(void *data, void *data_end, __u64 pkt_len) {
 
   // validate Ethernet size
   if ((void *)eth + sizeof(*eth) > data_end) {
-    bpf_printk("size validation failure");
+    // bpf_printk("size validation failure");
     return;
   }
 
@@ -280,7 +280,7 @@ static inline void process_eth(void *data, void *data_end, __u64 pkt_len) {
     break;
   }
   default:
-    bpf_printk("wrong packet type: %d", eth->h_proto);
+    // bpf_printk("wrong packet type: %d", eth->h_proto);
     return;
   }
 
@@ -298,14 +298,20 @@ static inline void process_eth(void *data, void *data_end, __u64 pkt_len) {
 }
 
 /**
- * Process SKB as it is seen by the cgroup, which is without the ethernet
- * headers
+ * Process a socket buffer and extract relevant information to populate the key.
  *
- * @param skb The CGroup skb
+ * @param skb pointer to the socket buffer
  *
  * @return none
  *
  * @throws none
+ *
+ * This function is called by the BPF program for each socket buffer received.
+ * It extracts relevant information from the socket buffer (PID, command name,
+ * src/dst IP, src/dst port, protocol) and stores it in the key. It then looks
+ * up the value in the packet count hash and increments the packet count and
+ * byte count if the key is found. If the key is not found, it creates a new
+ * entry with the packet count and byte count set to 1.
  */
 static inline void process_cgroup_skb(struct __sk_buff *skb) {
   void *data = (void *)(long)skb->data;
@@ -336,7 +342,7 @@ static inline void process_cgroup_skb(struct __sk_buff *skb) {
     break;
   }
   default:
-    bpf_printk("wrong packet type: %d", skb->protocol);
+    // bpf_printk("wrong packet type: %d", skb->protocol);
     return;
   }
 
@@ -430,6 +436,19 @@ int tc_count_packets(struct __sk_buff *skb) {
   return TC_ACT_UNSPEC;
 }
 
+/**
+ * BPF program entry point for tracking socket creations in a CGroup.
+ *
+ * This program is attached to the sock_create hook in the CGroup
+ * hierarchy. It records the PID and command name of the process
+ * creating the socket in the sock_info map.
+ *
+ * @param sk pointer to the newly created socket
+ *
+ * @return ALLOW_SK to allow the socket creation
+ *
+ * @throws none
+ */
 SEC("cgroup/sock_create")
 int cgroup_sock_create(struct bpf_sock *sk) {
   __u64 cookie = bpf_get_socket_cookie(sk);
@@ -445,6 +464,19 @@ int cgroup_sock_create(struct bpf_sock *sk) {
   return ALLOW_SK;
 }
 
+/**
+ * BPF program entry point for tracking ingress traffic in a CGroup.
+ *
+ * This program is attached to the ingress hook in the CGroup hierarchy.
+ * It records the packet and byte counters for the process associated with
+ * the socket in the pkt_count map.
+ *
+ * @param skb pointer to the packet buffer
+ *
+ * @return ALLOW_PKT to allow the packet to be processed
+ *
+ * @throws none
+ */
 SEC("cgroup_skb/ingress")
 int cgroup_skb_ingress(struct __sk_buff *skb) {
   process_cgroup_skb(skb);
@@ -452,6 +484,19 @@ int cgroup_skb_ingress(struct __sk_buff *skb) {
   return ALLOW_PKT;
 }
 
+/**
+ * BPF program entry point for tracking egress traffic in a CGroup.
+ *
+ * This program is attached to the egress hook in the CGroup hierarchy.
+ * It records the packet and byte counters for the process associated with
+ * the socket in the pkt_count map.
+ *
+ * @param skb pointer to the packet buffer
+ *
+ * @return ALLOW_PKT to allow the packet to be processed
+ *
+ * @throws none
+ */
 SEC("cgroup_skb/egress")
 int cgroup_skb_egress(struct __sk_buff *skb) {
   process_cgroup_skb(skb);
