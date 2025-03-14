@@ -3,9 +3,7 @@
 [![GitHub license](https://img.shields.io/github/license/dkorunic/pktstat-bpf)](https://github.com/dkorunic/pktstat-bpf/blob/master/LICENSE)
 [![GitHub release](https://img.shields.io/github/release/dkorunic/pktstat-bpf)](https://github.com/dkorunic/pktstat-bpf/releases/latest)
 
-![](gopher.jpg)
-
-(Go language Gopher flying on a eBPF bee and carrying a switch, created by Microsoft Designer DALL-E 3)
+![](gopher.png)
 
 ## About
 
@@ -19,7 +17,7 @@ By default eBPF component uses **TC** (Traffic Control) eBPF hooks with TCX atta
 
 Alternatively it can use **KProbes** to monitor TCP, UDP, ICMPv4 and ICMPv6 communication throughout all containers, K8s pods, translations and forwards and display process ID as well as process name, if the traffic was being sent or delivered to userspace application. KProbes traditionally work the slowest, being closest to the userspace -- but they bring sometimes useful process information. KProbes work also with much older Linux kernels as well, but the hard-dependancy is a [BTF-enabled](https://docs.ebpf.io/concepts/btf/) kernel.
 
-In case that you need to monitor just a specific **CGroup**, it is possible as well and monitoring both ingress and egress traffic is supported. You can also monitor all traffic by attaching to the root CGroup (e.g. `/sys/fs/cgroup`). Process tracking is possible when using CGroups, but only for traffic where pktstat-bpf observed the socket creation. 
+In case that you need to monitor just a specific **CGroup**, it is possible as well and monitoring both ingress and egress traffic is supported. You can also monitor all traffic by attaching to the root CGroup (e.g. `/sys/fs/cgroup`). Process tracking is possible when using CGroups, but only for traffic where pktstat-bpf observed the socket creation.
 ![Demo](demo.gif)
 
 ## Talk
