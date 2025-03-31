@@ -10,7 +10,7 @@ require (
 	github.com/goccy/go-json v0.10.5
 	github.com/hako/durafmt v0.0.0-20210608085754-5c1018a4e16b
 	github.com/peterbourgon/ff/v4 v4.0.0-alpha.4
-	github.com/rivo/tview v0.0.0-20241227133733-17b7edb88c57
+	github.com/rivo/tview v0.0.0-20250330220935-949945f8d922
 )
 
 require (
