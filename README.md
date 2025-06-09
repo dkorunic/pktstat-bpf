@@ -20,11 +20,17 @@ Alternatively it can use **KProbes** to monitor TCP, UDP, ICMPv4 and ICMPv6 comm
 In case that you need to monitor just a specific **CGroup**, it is possible as well and monitoring both ingress and egress traffic is supported. You can also monitor all traffic by attaching to the root CGroup (e.g. `/sys/fs/cgroup`). Process tracking is possible when using CGroups, but only for traffic where pktstat-bpf observed the socket creation.
 ![Demo](demo.gif)
 
-## Talk
+## Talks
 
-The author of this tool has given a eBPF talk (Features, capabilities and implementation) on [DEEP Conference](https://deep-conference.com/) 2024 which can be seen below, together with [slides](https://dkorunic.net/pdf/Korunic_eBPF.pdf). Note, the talk is only in Croatian language at this moment:
+The author of this tool has given a few eBPF talks which can be seen below, together with [slides](https://dkorunic.net/pdf/Korunic_eBPF.pdf):
 
-[![DEEP 2024: eBPF: Features, capabilities and implementation](https://img.youtube.com/vi/9mQ03Cpfq_g/0.jpg)](https://www.youtube.com/watch?v=9mQ03Cpfq_g)
+- Shorter eBPF features/capabilities/implementation overview (35 minutes):
+
+[![DORS/CLUC 2025: eBPF](https://img.youtube.com/vi/m8dbesXHOU4/0.jpg)](https://youtu.be/m8dbesXHOU4)
+
+- Longer dive into eBPF features/capabilities/implementation and security (~45 minutes, in Croatian language):
+
+[![DEEP 2024: eBPF: Features, capabilities and implementation](https://img.youtube.com/vi/9mQ03Cpfq_g/0.jpg)](https://youtu.be/9mQ03Cpfq_g)
 
 ## Requirements
 
