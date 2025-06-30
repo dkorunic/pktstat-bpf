@@ -4,6 +4,7 @@
 *.exe~
 *.dll
 *.so
+*.o
 *.dylib
 pktstat-bpf
 dist/

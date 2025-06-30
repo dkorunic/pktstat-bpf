@@ -1,0 +1,63 @@
+name: Create Release
+
+on:
+  push:
+    tags:
+      - "v*"
+
+jobs:
+  build-x86_64:
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v4
+      - run: git config --global --add safe.directory $(pwd) # Workaround for fatal: detected dubious ownership in repository at '/__w/reliability-matrix/reliability-matrix'
+      - name: Set up Go
+        uses: actions/setup-go@v4
+        with:
+          go-version-file: go.mod
+      - run: make generate build VERSION=${{ github.ref_name }}
+      - run: mv ./pktstat-bpf ./pktstat-bpf-x86_64
+      - name: Upload x86_64 binary
+        uses: actions/upload-artifact@v4
+        with:
+          name: pktstat-bpf-x86_64
+          path: ./pktstat-bpf-x86_64
+
+  build-aarch64:
+    runs-on: ARM64-CMX
+    steps:
+      - uses: actions/checkout@v4
+      - run: git config --global --add safe.directory $(pwd) # Workaround for fatal: detected dubious ownership in repository at '/__w/reliability-matrix/reliability-matrix'
+      - name: Set up Go
+        uses: actions/setup-go@v4
+        with:
+          go-version-file: go.mod
+      - run: make generate build VERSION=${{ github.ref_name }}
+      - run: mv ./pktstat-bpf ./pktstat-bpf-aarch64
+      - name: Upload aarch64 binary
+        uses: actions/upload-artifact@v4
+        with:
+          name: pktstat-bpf-aarch64
+          path: ./pktstat-bpf-aarch64
+
+  create-release:
+    runs-on: ubuntu-22.04
+    needs:
+      - build-x86_64
+      - build-aarch64
+    steps:
+      - uses: actions/checkout@v4
+      - name: Download x86_64 binary
+        uses: actions/download-artifact@v4
+        with:
+          name: pktstat-bpf-x86_64
+          path: ./bin
+      - name: Download aarch64 binary
+        uses: actions/download-artifact@v4
+        with:
+          name: pktstat-bpf-aarch64
+          path: ./bin
+      - name: Create GitHub Release
+        run: gh release create ${{ github.ref_name }} ./bin/pktstat-bpf-x86_64 ./bin/pktstat-bpf-aarch64 --generate-notes
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

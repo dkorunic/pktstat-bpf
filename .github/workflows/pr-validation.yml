@@ -1,0 +1,75 @@
+name: Pull Request Validation
+
+on:
+  pull_request:
+    branches:
+    - main
+
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+      
+    - name: Set up Go
+      uses: actions/setup-go@v4
+      with:
+        go-version-file: go.mod
+        
+    - name: Validate go fmt
+      run: |
+        if [ "$(gofmt -s -l . | wc -l)" -gt 0 ]; then
+          echo "The following files are not properly formatted:"
+          gofmt -s -l .
+          echo "Please run 'go fmt ./...' to fix formatting issues."
+          exit 1
+        fi
+        
+    - name: Validate go mod tidy
+      run: |
+        go mod tidy
+        if ! git diff --exit-code go.mod go.sum; then
+          echo "go.mod or go.sum files are not up to date"
+          echo "Please run 'go mod tidy' and commit the changes"
+          exit 1
+        fi
+
+  build:
+    runs-on: ${{ matrix.runner }}
+    strategy:
+      matrix:
+        include:
+          - arch: x86_64
+            runner: ubuntu-22.04
+          # - arch: aarch64
+          #   runner: ARM64-CMX
+    
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+      
+    - name: Set up Go
+      uses: actions/setup-go@v4
+      with:
+        go-version-file: go.mod
+        
+    - name: Install dependencies
+      run: |
+        sudo apt-get update
+        sudo apt-get install -y clang llvm libbpf-dev
+        
+    - name: Run make generate
+      run: make generate
+      
+    - name: Run make build
+      run: make build
+      
+    - name: Verify build artifact
+      run: |
+        if [ ! -f pktstat-bpf ]; then
+          echo "Build artifact 'pktstat-bpf' not found"
+          exit 1
+        fi
+        echo "Build successful - artifact created for ${{ matrix.arch }}"
