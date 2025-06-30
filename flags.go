@@ -24,45 +24,24 @@ package main
 import (
 	"fmt"
 	"os"
-	"time"
 
-	"github.com/cilium/ebpf/link"
 	"github.com/peterbourgon/ff/v4"
 	"github.com/peterbourgon/ff/v4/ffhelp"
 )
 
-const (
-	defaultIface                          = "eth0"
-	defaultTimeout                        = 10 * time.Minute
-	defaultRefresh                        = 1 * time.Second
-	defaultXDPMode                        = "auto"
-	XDPAttachModeNone link.XDPAttachFlags = 0
-)
-
 var (
-	ifname, xdpMode, useCGroup                               *string
-	jsonOutput, version, help, useXDP, useKProbes, enableTUI *bool
-	timeout, refresh                                         *time.Duration
-	xdpAttachFlags                                           link.XDPAttachFlags
+	uniqueOutput, version, help, externalOnly *bool
+	kubeconfig                                *string
 )
 
-func parseFags() {
-	fs := ff.NewFlagSet("pktstat-bpf")
+func parseFlags() {
+	fs := ff.NewFlagSet("pktstat-kube")
 
 	help = fs.Bool('?', "help", "display help")
-	jsonOutput = fs.Bool('j', "json", "if true, output in JSON format")
-	useCGroup = fs.String('c', "cgroup", "", "the path to a CGroup V2 to measure statistics on")
-	useXDP = fs.Bool('x', "xdp", "if true, use XDP instead of TC (this disables egress statistics)")
-	useKProbes = fs.Bool('k', "kprobes", "if true, use KProbes for per-proces TCP/UDP statistics")
-	enableTUI = fs.Bool('g', "tui", "if true, enable TUI")
-
+	uniqueOutput = fs.Bool('u', "unique", "if true, only show the first instance of each connection")
+	kubeconfig = fs.StringLong("kubeconfig", "", "path to kubeconfig file (Kubernetes lookups enabled if provided)")
+	externalOnly = fs.BoolLong("external", "if true, only show traffic to external destinations")
 	version = fs.BoolLong("version", "display program version")
-
-	ifname = fs.String('i', "iface", findFirstEtherIface(), "interface to read from")
-	xdpMode = fs.StringLong("xdp_mode", defaultXDPMode, "XDP attach mode (auto, generic, native or offload; native and offload require NIC driver support)")
-
-	refresh = fs.Duration('r', "refresh", defaultRefresh, "refresh interval in TUI")
-	timeout = fs.Duration('t', "timeout", defaultTimeout, "timeout for packet capture in CLI")
 
 	var err error
 
@@ -83,28 +62,5 @@ func parseFags() {
 		fmt.Printf("pktstat-bpf %v %v%v, built on: %v\n", GitTag, GitCommit, GitDirty, BuildTime)
 
 		os.Exit(0)
-	}
-
-	switch *xdpMode {
-	case "", "auto", "best":
-		// kernel will select the best mode starting with Native and fallback to Generic
-		xdpAttachFlags = XDPAttachModeNone
-	case "generic":
-		// SKB generic XDP mode
-		xdpAttachFlags = link.XDPGenericMode
-	case "native", "driver":
-		// XDP support from NIC driver required
-		xdpAttachFlags = link.XDPDriverMode
-	case "offload", "hardware":
-		// only for NICs with HW XDP support
-		xdpAttachFlags = link.XDPOffloadMode
-	default:
-		fmt.Printf("Error invalid XDP mode: %v, pick from: auto, generic, native or offload\n", *xdpMode)
-
-		os.Exit(1)
-	}
-
-	if *enableTUI {
-		*timeout = 0
 	}
 }

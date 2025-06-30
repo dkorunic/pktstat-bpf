@@ -1,3 +1,6 @@
+//go:build linux
+// +build linux
+
 // @license
 // Copyright (C) 2024  Dinko Korunic
 //
@@ -26,25 +29,55 @@ import (
 	"errors"
 	"fmt"
 	"log"
-	"net"
 	"os"
 	"os/signal"
+	"strings"
+	"sync"
 	"syscall"
 	"time"
 
 	"github.com/cilium/ebpf"
 	"github.com/cilium/ebpf/features"
 	"github.com/cilium/ebpf/link"
+	"github.com/cilium/ebpf/ringbuf"
 	"github.com/cilium/ebpf/rlimit"
-	"github.com/hako/durafmt"
+	json "github.com/goccy/go-json"
+)
+
+// Global variables for DNS tracking
+var (
+	// Track DNS service IPs
+	dnsServiceIPs []string
+
+	// Maps to track DNS requests and their origins
+	dnsRequestOrigins = make(map[string]*dnsOrigin) // key: "srcIP:srcPort-dstIP:dstPort", value: origin info
+	dnsRequestsMutex  = &sync.RWMutex{}
+
+	// DNS hostnames to IP mappings
+	dnsHostToIP    = make(map[string][]dnsOriginMapping) // key: hostname, value: slice of IPs
+	dnsIPToHost    = make(map[string][]dnsOriginMapping) // key: IP string, value: slice of hostnames
+	dnsHostIPMutex = &sync.RWMutex{}
 )
 
 func main() {
-	parseFags()
+	parseFlags()
 
 	// Remove resource limits for kernels <5.11
 	if err := rlimit.RemoveMemlock(); err != nil {
 		log.Fatalf("Error removing memlock: %v", err)
+	}
+
+	// Initialize Kubernetes client if kubeconfig is provided
+	if kubeconfig != nil && *kubeconfig != "" {
+		if err := initKubernetesClient(); err != nil {
+			log.Fatalf("Error initializing Kubernetes client: %v", err)
+		}
+
+		// Start cache cleanup goroutine
+		go cleanupIPToPodCache()
+
+		// Detect DNS services in the cluster
+		detectDNSServices()
 	}
 
 	// Load the compiled eBPF ELF and load it into the kernel
@@ -54,11 +87,6 @@ func main() {
 	}
 	defer func() { _ = objs.Close() }()
 
-	iface, err := net.InterfaceByName(*ifname)
-	if err != nil {
-		log.Fatalf("Error getting interface %q: %v", *ifname, err) //nolint:gocritic
-	}
-
 	var links []link.Link
 
 	defer func() {
@@ -67,68 +95,209 @@ func main() {
 		}
 	}()
 
-	switch {
-	case *useCGroup != "":
-		links = startCgroup(objs, *useCGroup, links)
-	// KProbes w/ PID tracking
-	case *useKProbes:
-		hooks := []kprobeHook{
-			{kprobe: "tcp_sendmsg", prog: objs.TcpSendmsg},
-			{kprobe: "tcp_cleanup_rbuf", prog: objs.TcpCleanupRbuf},
-			{kprobe: "ip_send_skb", prog: objs.IpSendSkb},
-			{kprobe: "skb_consume_udp", prog: objs.SkbConsumeUdp},
-			{kprobe: "__icmp_send", prog: objs.IcmpSend},
-			{kprobe: "icmp6_send", prog: objs.Icmp6Send},
-			{kprobe: "icmp_rcv", prog: objs.IcmpRcv},
-			{kprobe: "icmpv6_rcv", prog: objs.Icmpv6Rcv},
-		}
-
-		links = startKProbes(hooks, links)
-	// XDP
-	case *useXDP:
-		links = startXDP(objs, iface, links)
-	// TC
-	default:
-		links = startTC(objs, iface, links)
+	// Set up kprobes for packet tracking
+	hooks := []kprobeHook{
+		{kprobe: "tcp_sendmsg", prog: objs.TcpSendmsg},
+		{kprobe: "tcp_cleanup_rbuf", prog: objs.TcpCleanupRbuf},
+		{kprobe: "ip_send_skb", prog: objs.IpSendSkb},
+		{kprobe: "ip_local_out", prog: objs.IpLocalOutFn},
+		{kprobe: "ip_output", prog: objs.IpOutputFn},
+		{kprobe: "skb_consume_udp", prog: objs.SkbConsumeUdp},
+		{kprobe: "__icmp_send", prog: objs.IcmpSend},
+		{kprobe: "icmp6_send", prog: objs.Icmp6Send},
+		{kprobe: "icmp_rcv", prog: objs.IcmpRcv},
+		{kprobe: "icmpv6_rcv", prog: objs.Icmpv6Rcv},
 	}
 
-	c1, cancel := context.WithCancel(context.Background())
+	links = startKProbes(hooks, links)
+
+	// Set up uprobes for DNS tracking
+	// Try multiple potential libc locations
+	libcLocations := []string{
+		"/lib64/libc.so.6",                // Common on some systems
+		"/lib/x86_64-linux-gnu/libc.so.6", // Debian/Ubuntu
+		"/usr/lib/libc.so.6",              // Potential fallback
+		"/usr/lib64/libc.so.6",            // Another potential location
+	}
+
+	var libcLocation string
+	var libcExists bool
+
+	for _, loc := range libcLocations {
+		if _, err := os.Stat(loc); err == nil {
+			libcLocation = loc
+			libcExists = true
+			log.Printf("Found libc at: %s", libcLocation)
+			break
+		}
+	}
+
+	if !libcExists {
+		log.Fatalf("Error: Could not find libc.so.6 in any standard locations, cannot attach uprobes")
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
-	startTime := time.Now()
+	upHooks := []uprobeHook{
+		{
+			symbol: "getaddrinfo",
+			prog:   objs.UprobeGetaddrinfo,
+		},
+		{
+			symbol: "gethostbyname",
+			prog:   objs.UprobeGethostbyname2,
+		},
+		{
+			symbol: "gethostbyname2",
+			prog:   objs.UprobeGethostbyname2,
+		},
+		{
+			symbol: "gethostbyname_r",
+			prog:   objs.UprobeGethostbynameR,
+		},
+	}
 
-	if *enableTUI {
-		drawTUI(objs, startTime)
-	} else {
-		signalCh := make(chan os.Signal, 1)
-		signal.Notify(signalCh, os.Interrupt, syscall.SIGTERM, syscall.SIGINT)
+	// Open the executable once outside the loop
+	ex, err := link.OpenExecutable(libcLocation)
+	if err != nil {
+		log.Fatalf("Failed to open executable: %v", err)
+	}
 
-		go func() {
-			s := <-signalCh
-			_, _ = fmt.Fprintf(os.Stderr, "Received %v signal, trying to exit...\n", s)
-			cancel()
-		}()
+	for _, up := range upHooks {
+		log.Printf("Attaching UProbe: %s", up.symbol)
 
-		if *timeout > 0 {
-			log.Printf("Listening for %v before exiting", durafmt.Parse(*timeout))
-
-			go func() {
-				time.Sleep(*timeout)
-				cancel()
-			}()
-		}
-
-		<-c1.Done()
-
-		m, err := processMap(objs.PktCount, startTime, bitrateSort)
+		var l link.Link
+		l, err = ex.Uprobe(up.symbol, up.prog, nil)
 		if err != nil {
-			log.Fatalf("Error reading eBPF map: %v", err)
+			log.Fatalf("Failed to attach uprobe: %v", err)
 		}
 
-		if *jsonOutput {
-			fmt.Println(outputJSON(m))
-		} else {
-			fmt.Printf(outputPlain(m))
+		defer l.Close()
+
+		links = append(links, l)
+	}
+
+	signalCh := make(chan os.Signal, 1)
+	signal.Notify(signalCh, os.Interrupt, syscall.SIGTERM, syscall.SIGINT)
+
+	// Create a ticker to process the map every second
+	ticker := time.NewTicker(1 * time.Second)
+	defer ticker.Stop()
+
+	// Set up signal handler
+	go func() {
+		s := <-signalCh
+		_, _ = fmt.Fprintf(os.Stderr, "Received %v signal, exiting...\n", s)
+		cancel()
+	}()
+
+	// Create DNS lookup map and mutex for sharing between goroutines
+	dnsLookupMap := make(map[uint32]string)
+	dnsLookupMapMutex := &sync.RWMutex{}
+
+	// Start a goroutine to process DNS events from the ringbuffer
+	dnsReader, err := ringbuf.NewReader(objs.DnsEvents)
+	if err != nil {
+		log.Printf("Failed to create ringbuf reader for DNS events: %v", err)
+	} else {
+		log.Printf("Created DNS events ringbuf reader successfully")
+		go processDNSEvents(ctx, dnsReader, dnsLookupMap, dnsLookupMapMutex)
+		defer dnsReader.Close()
+	}
+
+	// Run the main loop
+	seenEntries := make(map[string]bool)
+	for {
+		select {
+		case <-ticker.C:
+			// Process the map
+			entries, err := processMap(objs.PktCount, timeDateSort)
+			if err != nil {
+				log.Printf("Error reading eBPF map: %v", err)
+				continue
+			}
+
+			// Filter out entries we've already seen and enrich with DNS data
+			var newEntries []statEntry
+			for _, entry := range entries {
+				// Enrich entry with DNS hostname if available
+				if entry.Pid != 0 {
+					dnsLookupMapMutex.RLock()
+					if hostname, exists := dnsLookupMap[uint32(entry.Pid)]; exists {
+						entry.DNSQueryName = hostname
+					}
+					dnsLookupMapMutex.RUnlock()
+				}
+
+				// Create unique keys for tracking seen entries
+				// For regular tracking (with timestamp)
+				timeKey := fmt.Sprintf("%s:%d->%s:%d:%s:%d:%s:%s",
+					entry.SrcIP, entry.SrcPort, entry.DstIP, entry.DstPort,
+					entry.Proto, entry.Pid, entry.Comm, entry.Timestamp.Format(time.RFC3339Nano))
+
+				// For --unique tracking (without timestamp)
+				uniqueKey := fmt.Sprintf("%s:%d->%s:%d:%s:%d:%s",
+					entry.SrcIP, entry.SrcPort, entry.DstIP, entry.DstPort,
+					entry.Proto, entry.Pid, entry.Comm)
+
+				// Determine if we should include this entry
+				shouldInclude := false
+
+				if uniqueOutput != nil && *uniqueOutput {
+					// When using --unique, filter by the connection pattern without timestamp
+					if !seenEntries[uniqueKey] {
+						seenEntries[uniqueKey] = true
+						seenEntries[timeKey] = true
+						shouldInclude = true
+					}
+				} else {
+					// Normal mode, filter only exact duplicates with timestamp
+					if !seenEntries[timeKey] {
+						seenEntries[timeKey] = true
+						shouldInclude = true
+					}
+				}
+
+				if shouldInclude {
+					newEntries = append(newEntries, entry)
+				}
+			}
+
+			// Process DNS flow correlation
+			correlatedDNSEvents := processDNSFlow(entries, dnsLookupMap, dnsLookupMapMutex)
+
+			// Skip if no new entries or correlated DNS events
+			if len(newEntries) == 0 && len(correlatedDNSEvents) == 0 {
+				continue
+			}
+
+			// Output correlated DNS events first if any
+			if len(correlatedDNSEvents) > 0 {
+				for _, dnsEvent := range correlatedDNSEvents {
+					dnsJSON, _ := json.Marshal(dnsEvent)
+					fmt.Println(string(dnsJSON))
+				}
+			}
+
+			// Skip regular output if no new entries
+			if len(newEntries) == 0 {
+				continue
+			}
+
+			// Format output as JSON Lines
+			output := outputJSON(newEntries)
+
+			// Add newline if needed
+			if output != "" && !strings.HasSuffix(output, "\n") {
+				output += "\n"
+			}
+
+			// Write output to stdout
+			fmt.Print(output)
+
+		case <-ctx.Done():
+			return
 		}
 	}
 }
@@ -167,6 +336,7 @@ func startKProbes(hooks []kprobeHook, links []link.Link) []link.Link {
 	}
 
 	for _, kp := range hooks {
+		log.Printf("Attaching %q KProbe", kp.kprobe)
 		l, err = link.Kprobe(kp.kprobe, kp.prog, nil)
 		if err != nil {
 			log.Printf("Unable to attach %q KProbe: %v", kp.kprobe, err)
@@ -176,164 +346,6 @@ func startKProbes(hooks []kprobeHook, links []link.Link) []link.Link {
 
 		links = append(links, l)
 	}
-
-	log.Printf("Using KProbes mode w/ PID/comm tracking")
-
-	return links
-}
-
-// startXDP attaches an eBPF XDP program to a network interface for packet counting.
-//
-// This function checks if the XDP program type is supported by the kernel. If supported,
-// it attaches the XDP program to the specified network interface's ingress path. Note that
-// egress support is not available for XDP, and the function requires at least a v5.9 kernel
-// for BPF_LINK_CREATE, though it might work with older RHEL kernels.
-//
-// Parameters:
-//
-//	objs counterObjects: Contains the eBPF programs, including the XDP program to be attached.
-//	iface *net.Interface: The network interface to which the XDP program should be attached.
-//	links []link.Link: A slice of existing link.Link objects to which the newly attached XDP link
-//	                    will be appended.
-//
-// Returns:
-//
-//	[]link.Link: The updated slice of link.Link objects, now including the newly attached XDP link.
-func startXDP(objs counterObjects, iface *net.Interface, links []link.Link) []link.Link {
-	var l link.Link
-
-	err := features.HaveProgramType(ebpf.XDP)
-	if errors.Is(err, ebpf.ErrNotSupported) {
-		log.Fatalf("XDP not supported on this kernel")
-	}
-
-	if err != nil {
-		log.Fatalf("Error checking XDP support: %v", err)
-	}
-
-	// Attach count_packets to the network interface ingress, uses BPF_XDP
-	// NOTE: no egress support yet for BPF_XDP path
-	// NOTE: BPF_LINK_CREATE for XDP requires v5.9 kernel, but might work with older RHEL kernels
-	l, err = link.AttachXDP(link.XDPOptions{
-		Program:   objs.XdpCountPackets,
-		Interface: iface.Index,
-		Flags:     xdpAttachFlags,
-	})
-	if err != nil {
-		log.Fatalf("Error attaching %q XDP ingress: %v", *ifname, err)
-	}
-
-	links = append(links, l)
-
-	log.Printf("Starting on interface %q using XDP (eXpress Data Path) eBPF mode", *ifname)
-	log.Printf("Due to XDP mode, egress statistics are not available. Upon program exit, interface reset may happen on some cards.")
-
-	return links
-}
-
-// startTC attaches an eBPF program to a network interface for packet counting using
-// the Traffic Control (TC) eBPF mode. The function checks if the TC eBPF mode is
-// supported by the kernel. If supported, it attaches the program to both the ingress
-// and egress paths of the specified network interface. Note that TC eBPF mode requires
-// at least a v6.6 kernel.
-//
-// Parameters:
-//
-//	objs counterObjects: Contains the eBPF programs, including the TC program to be
-//	                      attached.
-//	iface *net.Interface: The network interface to which the TC program should be
-//	                      attached.
-//	links []link.Link: A slice of existing link.Link objects to which the newly
-//	                    attached TC links will be appended.
-//
-// Returns:
-//
-//	[]link.Link: The updated slice of link.Link objects, now including the newly
-//	             attached TC links.
-func startTC(objs counterObjects, iface *net.Interface, links []link.Link) []link.Link {
-	var l link.Link
-
-	err := features.HaveProgramType(ebpf.SchedACT)
-	if errors.Is(err, ebpf.ErrNotSupported) {
-		log.Fatalf("SchedACT not supported on this kernel")
-	}
-
-	if err != nil {
-		log.Fatalf("Error checking SchedACT support: %v", err)
-	}
-
-	// NOTE: BPF_TCX_INGRESS and BPF_TCX_EGRESS require v6.6 kernel
-	// Attach count_packets to the network interface ingress, uses BPF_TCX_INGRESS
-	l, err = link.AttachTCX(link.TCXOptions{
-		Program:   objs.TcCountPackets,
-		Attach:    ebpf.AttachTCXIngress,
-		Interface: iface.Index,
-	})
-	if err != nil {
-		log.Fatalf("Error attaching %q TCX ingress: %v", *ifname, err)
-	}
-
-	links = append(links, l)
-
-	// Attach count_packets to the network interface egresss, uses BPF_TCX_EGRESS
-	l, err = link.AttachTCX(link.TCXOptions{
-		Program:   objs.TcCountPackets,
-		Attach:    ebpf.AttachTCXEgress,
-		Interface: iface.Index,
-	})
-	if err != nil {
-		log.Fatalf("Error attaching %q TCX egress: %v", *ifname, err)
-	}
-
-	links = append(links, l)
-
-	log.Printf("Starting on interface %q using TC (Traffic Control) eBPF mode", *ifname)
-
-	return links
-}
-
-func startCgroup(objs counterObjects, cgroupPath string, links []link.Link) []link.Link {
-	var l link.Link
-
-	err := features.HaveProgramType(ebpf.CGroupSKB)
-	if errors.Is(err, ebpf.ErrNotSupported) {
-		log.Fatalf("CgroupSKB not supported on this kernel")
-	}
-
-	if err != nil {
-		log.Fatalf("Error checking CGroupSKB support: %v", err)
-	}
-
-	l, err = link.AttachCgroup(link.CgroupOptions{
-		Program: objs.CgroupSockCreate,
-		Attach:  ebpf.AttachCGroupInetSockCreate,
-		Path:    cgroupPath,
-	})
-	if err != nil {
-		log.Fatalf("Error attaching CgroupSockCreate to %s: %v", cgroupPath, err)
-	}
-
-	l, err = link.AttachCgroup(link.CgroupOptions{
-		Program: objs.CgroupSkbIngress,
-		Attach:  ebpf.AttachCGroupInetIngress,
-		Path:    cgroupPath,
-	})
-	if err != nil {
-		log.Fatalf("Error attaching CgroupSkbIngress to %s: %v", cgroupPath, err)
-	}
-
-	l, err = link.AttachCgroup(link.CgroupOptions{
-		Program: objs.CgroupSkbEgress,
-		Attach:  ebpf.AttachCGroupInetEgress,
-		Path:    cgroupPath,
-	})
-	if err != nil {
-		log.Fatalf("Error attaching CgroupSkbEgress to %s: %v", cgroupPath, err)
-	}
-
-	links = append(links, l)
-
-	log.Printf("Starting on CGroup %s", cgroupPath)
 
 	return links
 }

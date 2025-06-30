@@ -21,5 +21,5 @@
 
 package main
 
-//go:generate go run github.com/cilium/ebpf/cmd/bpf2go -target amd64 counter counter.c -- -I./contrib/amd64
-//go:generate go run github.com/cilium/ebpf/cmd/bpf2go -target arm64 counter counter.c -- -I./contrib/arm64
+//go:generate go run github.com/cilium/ebpf/cmd/bpf2go -target amd64 counter bpf/counter.c -- -I./contrib/amd64
+//go:generate go run github.com/cilium/ebpf/cmd/bpf2go -target arm64 counter bpf/counter.c -- -I./contrib/arm64

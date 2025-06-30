@@ -23,24 +23,89 @@ package main
 
 import (
 	"net/netip"
+	"time"
 
 	"github.com/cilium/ebpf"
 )
 
-type statEntry struct {
-	SrcIP   netip.Addr `json:"srcIp"`
-	DstIP   netip.Addr `json:"dstIp"`
-	Proto   string     `json:"proto"`
-	Comm    string     `json:"comm,omitempty"`
-	Bytes   uint64     `json:"bytes"`
-	Packets uint64     `json:"packets"`
-	Bitrate float64    `json:"bitrate"`
-	Pid     int32      `json:"pid,omitempty"`
-	SrcPort uint16     `json:"srcPort"`
-	DstPort uint16     `json:"dstPort"`
-}
-
 type kprobeHook struct {
 	prog   *ebpf.Program
 	kprobe string
+}
+
+type uprobeHook struct {
+	prog   *ebpf.Program
+	symbol string // Name of the function to attach to
+}
+
+type statEntry struct {
+	Timestamp time.Time `json:"timestamp"`
+
+	SrcIP     netip.Addr `json:"srcIp"`
+	DstIP     netip.Addr `json:"dstIp"`
+	SrcPort   uint16     `json:"srcPort"`
+	DstPort   uint16     `json:"dstPort"`
+	Proto     string     `json:"proto"`
+	Comm      string     `json:"comm,omitempty"`
+	Pid       int32      `json:"pid,omitempty"`
+	SourcePod string     `json:"sourcePod,omitempty"`
+	DstPod    string     `json:"dstPod,omitempty"`
+
+	DNSQueryName  string `json:"dnsQueryName,omitempty"`
+	LikelyService string `json:"likelyService,omitempty"`
+}
+
+// dnsOriginMapping stores a mapping between a hostname and IP with a timestamp
+type dnsOriginMapping struct {
+	Hostname  string
+	IP        string
+	Timestamp time.Time
+}
+
+// dnsOrigin stores information about the original process that initiated a DNS request
+type dnsOrigin struct {
+	SrcIP     string
+	SrcPort   uint16
+	Pid       uint32
+	Comm      string
+	Timestamp time.Time
+	PodName   string
+}
+
+// dnsLookupEvent represents a DNS lookup event
+type dnsLookupEvent struct {
+	AddrType uint32
+	IP       [16]uint8
+	Host     [252]byte
+	Pid      uint32
+	Comm     [16]byte
+}
+
+// dnsCorrelatedEvent represents a complete DNS flow from client to external DNS
+type dnsCorrelatedEvent struct {
+	// Original client information
+	OriginalSrcIP   string `json:"originalSrcIp"`
+	OriginalSrcPort uint16 `json:"originalSrcPort"`
+	OriginalPod     string `json:"originalPod"`
+	OriginalComm    string `json:"originalComm"`
+	OriginalPid     int32  `json:"originalPid"`
+
+	// Timestamp of the correlation
+	Timestamp time.Time `json:"timestamp"`
+
+	// DNS server information (e.g., CoreDNS)
+	DNSServerIP   string `json:"dnsServerIp"`
+	DNSServerComm string `json:"dnsServerComm"`
+	DNSServerPid  int32  `json:"dnsServerPid"`
+
+	// External destination information
+	ExternalDstIP   string `json:"externalDstIp"`
+	ExternalDstPort uint16 `json:"externalDstPort"`
+
+	// Protocol and service info
+	Proto         string `json:"proto"`
+	LikelyService string `json:"likelyService"`
+
+	// DNS query name if available
+	DNSQueryName string `json:"dnsQueryName,omitempty"`
 }
