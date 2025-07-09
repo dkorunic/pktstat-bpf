@@ -81,3 +81,15 @@ sudo apt install linux-headers-$(uname -r) \
                  linux-tools-common \
                  linux-tools-generic
 ```
+
+### Testing a Release with Cluster Provisioner
+Build the test release of `pktstat-bpf`:
+
+```shell
+make build
+```
+
+Move the release into the `network-report-collector-path` set in
+`/etc/cluster-provisioner/cluster-provisioner.yaml` (default: `/opt/cluster-provisioner/bin/pktstat-bpf`) and spin up a cluster
+or VM.  Cluster Provisioner will use the binary at that path to collect
+network reports.

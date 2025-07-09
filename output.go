@@ -50,11 +50,23 @@ func processMap(m *ebpf.Map, sortFunc func([]statEntry)) ([]statEntry, error) {
 		srcIP := bytesToAddr(key.Srcip.In6U.U6Addr8)
 		dstIP := bytesToAddr(key.Dstip.In6U.U6Addr8)
 
+		// Filter out traffic with IPv6 unspecified addresses, this is to
+		// prevent users from seeing traffic to/from a cluster-provisioner
+		// host.
+		srcIPStr := srcIP.String()
+		dstIPStr := dstIP.String()
+		if srcIPStr == "::" && dstIPStr == "::" {
+			continue
+		}
+
+		// Filter out SSH/SCP traffic coming into the server, this is to
+		// prevent users from seeing their own ssh session traffic.
+		if key.DstPort == 22 {
+			continue
+		}
+
 		// Check if this IP is a DNS service
 		isDNSTraffic := false
-		dstIPStr := dstIP.String()
-		srcIPStr := srcIP.String()
-
 		for _, dnsIP := range dnsServiceIPs {
 			if dstIPStr == dnsIP || srcIPStr == dnsIP {
 				isDNSTraffic = true
