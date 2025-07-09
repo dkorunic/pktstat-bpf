@@ -63,3 +63,21 @@ With `--external` the program will only show traffic to external destinations (n
 With `--unique` the program will only show the first occurrence of each unique connection, ignoring timestamp differences. This is useful to filter out repetitive traffic and focus on the connection patterns.
 
 You can redirect the output to a file using standard shell redirection (e.g., `./pktstat-kube > output.json`).
+
+## Development
+### Dependencies
+If you're developing this against an Ubuntu system, you can install the
+needed packages to run `make generate` with:
+
+```shell
+sudo apt install linux-headers-$(uname -r) \
+                 libbpfcc-dev \
+                 libbpf-dev \
+                 llvm \
+                 clang \
+                 gcc-multilib \
+                 build-essential \
+                 linux-tools-$(uname -r) \
+                 linux-tools-common \
+                 linux-tools-generic
+```
