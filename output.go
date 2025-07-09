@@ -23,6 +23,7 @@ package main
 
 import (
 	"bytes"
+	"errors"
 	"sort"
 	"strings"
 	"time"
@@ -43,10 +44,12 @@ func processMap(m *ebpf.Map, sortFunc func([]statEntry)) ([]statEntry, error) {
 	)
 
 	stats := make([]statEntry, 0, m.MaxEntries())
+	observedKeys := make([]counterStatkey, 0, m.MaxEntries())
 	iter := m.Iterate()
 
 	// build statEntry slice converting data where needed
 	for iter.Next(&key, &val) {
+		observedKeys = append(observedKeys, key)
 		srcIP := bytesToAddr(key.Srcip.In6U.U6Addr8)
 		dstIP := bytesToAddr(key.Dstip.In6U.U6Addr8)
 
@@ -95,7 +98,17 @@ func processMap(m *ebpf.Map, sortFunc func([]statEntry)) ([]statEntry, error) {
 
 	sortFunc(stats)
 
-	return stats, iter.Err()
+	errs := []error{}
+	if err := iter.Err(); err != nil {
+		errs = append(errs, err)
+	}
+
+	_, err := m.BatchDelete(observedKeys, nil)
+	if err != nil {
+		errs = append(errs, nil)
+	}
+
+	return stats, errors.Join(errs...)
 }
 
 // timeDateSort sorts a slice of statEntry objects by their Timestamp field in ascending order.
