@@ -230,12 +230,6 @@ func main() {
 					dnsLookupMapMutex.RUnlock()
 				}
 
-				// Create unique keys for tracking seen entries
-				// For regular tracking (with timestamp)
-				timeKey := fmt.Sprintf("%s:%d->%s:%d:%s:%d:%s:%s",
-					entry.SrcIP, entry.SrcPort, entry.DstIP, entry.DstPort,
-					entry.Proto, entry.Pid, entry.Comm, entry.Timestamp.Format(time.RFC3339Nano))
-
 				// For --unique tracking (without timestamp)
 				uniqueKey := fmt.Sprintf("%s:%d->%s:%d:%s:%d:%s",
 					entry.SrcIP, entry.SrcPort, entry.DstIP, entry.DstPort,
@@ -248,15 +242,11 @@ func main() {
 					// When using --unique, filter by the connection pattern without timestamp
 					if !seenEntries[uniqueKey] {
 						seenEntries[uniqueKey] = true
-						seenEntries[timeKey] = true
 						shouldInclude = true
 					}
 				} else {
-					// Normal mode, filter only exact duplicates with timestamp
-					if !seenEntries[timeKey] {
-						seenEntries[timeKey] = true
-						shouldInclude = true
-					}
+					// Normal mode, processMap will remove the last events processed, so always include events we see
+					shouldInclude = true
 				}
 
 				if shouldInclude {

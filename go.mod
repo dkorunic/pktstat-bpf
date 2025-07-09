@@ -7,6 +7,7 @@ toolchain go1.24.1
 require (
 	github.com/cilium/ebpf v0.18.0
 	github.com/goccy/go-json v0.10.5
+	github.com/hashicorp/go-multierror v1.1.1
 	github.com/peterbourgon/ff/v4 v4.0.0-alpha.4
 	k8s.io/apimachinery v0.33.1
 	k8s.io/client-go v0.33.1
@@ -24,6 +25,7 @@ require (
 	github.com/google/gnostic-models v0.6.9 // indirect
 	github.com/google/go-cmp v0.7.0 // indirect
 	github.com/google/uuid v1.6.0 // indirect
+	github.com/hashicorp/errwrap v1.0.0 // indirect
 	github.com/josharian/intern v1.0.0 // indirect
 	github.com/json-iterator/go v1.1.12 // indirect
 	github.com/mailru/easyjson v0.7.7 // indirect

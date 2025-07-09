@@ -29,6 +29,7 @@ import (
 
 	"github.com/cilium/ebpf"
 	json "github.com/goccy/go-json"
+	"github.com/hashicorp/go-multierror"
 )
 
 // processMap generates statEntry objects from an ebpf.Map.
@@ -43,10 +44,12 @@ func processMap(m *ebpf.Map, sortFunc func([]statEntry)) ([]statEntry, error) {
 	)
 
 	stats := make([]statEntry, 0, m.MaxEntries())
+	observedKeys := make([]counterStatkey, 0, m.MaxEntries())
 	iter := m.Iterate()
 
 	// build statEntry slice converting data where needed
 	for iter.Next(&key, &val) {
+		observedKeys = append(observedKeys, key)
 		srcIP := bytesToAddr(key.Srcip.In6U.U6Addr8)
 		dstIP := bytesToAddr(key.Dstip.In6U.U6Addr8)
 
@@ -107,7 +110,16 @@ func processMap(m *ebpf.Map, sortFunc func([]statEntry)) ([]statEntry, error) {
 
 	sortFunc(stats)
 
-	return stats, iter.Err()
+	var result error
+	if err := iter.Err(); err != nil {
+		result = multierror.Append(result, err)
+	}
+
+	if _, err := m.BatchDelete(observedKeys, nil); err != nil {
+		result = multierror.Append(result, err)
+	}
+
+	return stats, result
 }
 
 // timeDateSort sorts a slice of statEntry objects by their Timestamp field in ascending order.
