@@ -66,12 +66,12 @@ func cgroupPathDecode(id uint64) string {
 	// force the cache refresh if missing
 	cgroupCacheRefresh(CgroupRootPath)
 
-	// create negative cache entry
+	// create negative cache entry if still missing
 	if _, ok := cgroupCache[id]; !ok {
 		cgroupCache[id] = ""
 	}
 
-	// return the result
+	// return the result, positive or negative
 	return cgroupCache[id]
 }
 
