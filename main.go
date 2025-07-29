@@ -52,6 +52,7 @@ func main() {
 	if err := loadCounterObjects(&objs, nil); err != nil {
 		log.Fatalf("Error loading eBPF objects: %v", err)
 	}
+
 	defer func() { _ = objs.Close() }()
 
 	iface, err := net.InterfaceByName(*ifname)
@@ -97,6 +98,7 @@ func main() {
 
 	startTime := time.Now()
 
+	//nolint:nestif
 	if *enableTUI {
 		drawTUI(objs, startTime)
 	} else {
@@ -106,6 +108,7 @@ func main() {
 		go func() {
 			s := <-signalCh
 			_, _ = fmt.Fprintf(os.Stderr, "Received %v signal, trying to exit...\n", s)
+
 			cancel()
 		}()
 
@@ -128,7 +131,7 @@ func main() {
 		if *jsonOutput {
 			fmt.Println(outputJSON(m))
 		} else {
-			fmt.Printf(outputPlain(m))
+			fmt.Print(outputPlain(m))
 		}
 	}
 }
@@ -313,6 +316,8 @@ func startCgroup(objs counterObjects, cgroupPath string, links []link.Link) []li
 		log.Fatalf("Error attaching CgroupSockCreate to %s: %v", cgroupPath, err)
 	}
 
+	links = append(links, l)
+
 	l, err = link.AttachCgroup(link.CgroupOptions{
 		Program: objs.CgroupSkbIngress,
 		Attach:  ebpf.AttachCGroupInetIngress,
@@ -321,6 +326,8 @@ func startCgroup(objs counterObjects, cgroupPath string, links []link.Link) []li
 	if err != nil {
 		log.Fatalf("Error attaching CgroupSkbIngress to %s: %v", cgroupPath, err)
 	}
+
+	links = append(links, l)
 
 	l, err = link.AttachCgroup(link.CgroupOptions{
 		Program: objs.CgroupSkbEgress,

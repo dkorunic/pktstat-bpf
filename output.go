@@ -68,6 +68,7 @@ func processMap(m *ebpf.Map, start time.Time, sortFunc func([]statEntry)) ([]sta
 			Bitrate: 8 * float64(val.Bytes) / dur,
 			Pid:     key.Pid,
 			Comm:    comm2String(key.Comm[:]),
+			Cgroup:  cgroupPathDecode(key.Cgroupid),
 		})
 	}
 
@@ -178,21 +179,17 @@ func outputPlain(m []statEntry) string {
 				formatBitrate(v.Bitrate), v.Packets, v.Bytes, v.Proto, v.SrcIP, v.SrcPort, v.DstIP, v.DstPort))
 		}
 
-		if *useKProbes {
-			sb.WriteString(fmt.Sprintf(", pid: %d", v.Pid))
-
-			if v.Comm != "" {
-				sb.WriteString(fmt.Sprintf(", comm: %v", v.Comm))
-			}
-		}
-
-		if *useCGroup != "" {
+		if *useKProbes || *useCGroup != "" {
 			if v.Pid > 0 {
 				sb.WriteString(fmt.Sprintf(", pid: %d", v.Pid))
 			}
 
 			if v.Comm != "" {
 				sb.WriteString(fmt.Sprintf(", comm: %v", v.Comm))
+			}
+
+			if v.Cgroup != "" {
+				sb.WriteString(fmt.Sprintf(", cgroup: %v", v.Cgroup))
 			}
 		}
 

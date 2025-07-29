@@ -52,11 +52,12 @@
 typedef struct statkey_t {
   struct in6_addr srcip;    // source IPv6 address
   struct in6_addr dstip;    // destination IPv6 address
+  __u64 cgroupid;           // cgroup ID
+  char comm[TASK_COMM_LEN]; // process command
+  pid_t pid;                // process ID
   __u16 src_port;           // source port
   __u16 dst_port;           // destination port
   __u8 proto;               // transport protocol
-  pid_t pid;                // process ID
-  char comm[TASK_COMM_LEN]; // process command
 } statkey;
 
 // Map value struct with counters
@@ -508,6 +509,7 @@ int cgroup_skb_egress(struct __sk_buff *skb) {
  * Process TCP socket information and populate the key structure with
  * extracted data.
  *
+ * @param receive boolean flag indicating whether the socket is a receiver
  * @param sk pointer to the socket structure
  * @param key pointer to the statkey structure to be populated
  * @param pid process ID associated with the socket
@@ -522,7 +524,8 @@ int cgroup_skb_egress(struct __sk_buff *skb) {
  *
  * @throws none
  */
-static inline void process_tcp(struct sock *sk, statkey *key, pid_t pid) {
+static inline void process_tcp(bool receive, struct sock *sk, statkey *key,
+                               pid_t pid) {
   __u16 family = BPF_CORE_READ(sk, __sk_common.skc_family);
 
   switch (family) {
@@ -555,17 +558,29 @@ static inline void process_tcp(struct sock *sk, statkey *key, pid_t pid) {
     struct inet_sock *isk = (struct inet_sock *)sk;
     BPF_CORE_READ_INTO(&sport, isk, inet_sport);
   }
-  key->src_port = bpf_ntohs(sport);
+  key->src_port = sport;
   key->dst_port = bpf_ntohs(BPF_CORE_READ(sk, __sk_common.skc_dport));
 
   key->proto = IPPROTO_TCP;
   key->pid = pid;
+
+  /* we need to swap the source and destination IP addresses and ports */
+  if (receive) {
+    struct in6_addr tmp_ip = key->srcip;
+    key->srcip = key->dstip;
+    key->dstip = tmp_ip;
+
+    __u16 tmp_port = key->src_port;
+    key->src_port = key->dst_port;
+    key->dst_port = tmp_port;
+  }
 }
 
 /**
  * Process UDP socket information from a sk_buff and populate the key
  * structure.
  *
+ * @param receive boolean flag indicating whether the socket is a receiver
  * @param skb pointer to the socket buffer containing the UDP packet
  * @param key pointer to the statkey structure to be populated
  * @param pid process ID associated with the packet
@@ -577,8 +592,8 @@ static inline void process_tcp(struct sock *sk, statkey *key, pid_t pid) {
  *
  * @throws none
  */
-static inline void process_udp_recv(struct sk_buff *skb, statkey *key,
-                                    pid_t pid) {
+static inline void process_udp_recv(bool receive, struct sk_buff *skb,
+                                    statkey *key, pid_t pid) {
   struct udphdr *udphdr =
       (struct udphdr *)(BPF_CORE_READ(skb, head) +
                         BPF_CORE_READ(skb, transport_header));
@@ -733,7 +748,7 @@ static inline size_t process_udp_send(struct sk_buff *skb, statkey *key,
       (struct udphdr *)(BPF_CORE_READ(skb, head) +
                         BPF_CORE_READ(skb, transport_header));
 
-  process_udp_recv(skb, key, pid);
+  process_udp_recv(false, skb, key, pid);
   size_t msglen = BPF_CORE_READ(udphdr, len);
 
   return msglen;
@@ -886,7 +901,9 @@ int BPF_KPROBE(tcp_sendmsg, struct sock *sk, struct msghdr *msg, size_t size) {
     bpf_get_current_comm(&key.comm, sizeof(key.comm));
   }
 
-  process_tcp(sk, &key, pid);
+  key.cgroupid = bpf_get_current_cgroup_id();
+
+  process_tcp(false, sk, &key, pid);
   update_val(&key, size);
 
   return 0;
@@ -920,7 +937,9 @@ int BPF_KPROBE(tcp_cleanup_rbuf, struct sock *sk, int copied) {
     bpf_get_current_comm(&key.comm, sizeof(key.comm));
   }
 
-  process_tcp(sk, &key, pid);
+  key.cgroupid = bpf_get_current_cgroup_id();
+
+  process_tcp(true, sk, &key, pid);
   update_val(&key, copied);
 
   return 0;
@@ -955,6 +974,8 @@ int BPF_KPROBE(ip_send_skb, struct net *net, struct sk_buff *skb) {
     bpf_get_current_comm(&key.comm, sizeof(key.comm));
   }
 
+  key.cgroupid = bpf_get_current_cgroup_id();
+
   size_t msglen = process_udp_send(skb, &key, pid);
   update_val(&key, msglen);
 
@@ -986,7 +1007,9 @@ int BPF_KPROBE(skb_consume_udp, struct sock *sk, struct sk_buff *skb, int len) {
     bpf_get_current_comm(&key.comm, sizeof(key.comm));
   }
 
-  process_udp_recv(skb, &key, pid);
+  key.cgroupid = bpf_get_current_cgroup_id();
+
+  process_udp_recv(true, skb, &key, pid);
   update_val(&key, len);
 
   return 0;
@@ -1019,6 +1042,8 @@ int BPF_KPROBE(__icmp_send, struct sk_buff *skb, __u8 type, __u8 code,
   if (pid > 0) {
     bpf_get_current_comm(&key.comm, sizeof(key.comm));
   }
+
+  key.cgroupid = bpf_get_current_cgroup_id();
 
   size_t msglen = process_icmp4(skb, &key, pid);
   update_val(&key, msglen);
@@ -1053,6 +1078,8 @@ int BPF_KPROBE(icmp6_send, struct sk_buff *skb, __u8 type, __u8 code,
     bpf_get_current_comm(&key.comm, sizeof(key.comm));
   }
 
+  key.cgroupid = bpf_get_current_cgroup_id();
+
   size_t msglen = process_icmp6(skb, &key, pid);
   update_val(&key, msglen);
 
@@ -1082,6 +1109,8 @@ int BPF_KPROBE(icmp_rcv, struct sk_buff *skb) {
     bpf_get_current_comm(&key.comm, sizeof(key.comm));
   }
 
+  key.cgroupid = bpf_get_current_cgroup_id();
+
   size_t msglen = process_icmp4(skb, &key, pid);
   update_val(&key, msglen);
 
@@ -1110,6 +1139,8 @@ int BPF_KPROBE(icmpv6_rcv, struct sk_buff *skb) {
   if (pid > 0) {
     bpf_get_current_comm(&key.comm, sizeof(key.comm));
   }
+
+  key.cgroupid = bpf_get_current_cgroup_id();
 
   size_t msglen = process_icmp6(skb, &key, pid);
   update_val(&key, msglen);
@@ -1143,6 +1174,8 @@ int BPF_KPROBE(raw_sendmsg, struct sock *sk, struct msghdr *msg, size_t len) {
     bpf_get_current_comm(&key.comm, sizeof(key.comm));
   }
 
+  key.cgroupid = bpf_get_current_cgroup_id();
+
   process_raw_sendmsg4(sk, msg, &key, pid);
   update_val(&key, len);
 
@@ -1175,6 +1208,8 @@ int BPF_KPROBE(rawv6_sendmsg, struct sock *sk, struct msghdr *msg, size_t len) {
   if (pid > 0) {
     bpf_get_current_comm(&key.comm, sizeof(key.comm));
   }
+
+  key.cgroupid = bpf_get_current_cgroup_id();
 
   process_raw_sendmsg6(sk, msg, &key, pid);
   update_val(&key, len);

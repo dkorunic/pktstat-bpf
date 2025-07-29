@@ -19,6 +19,7 @@
 // OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 // SOFTWARE.
 
+//nolint:mnd
 package main
 
 import (
@@ -48,6 +49,7 @@ const (
 //   - Code (ICMP code, or 0 for non-ICMP packets)
 //   - PID (process ID)
 //   - Comm (process name)
+//   - CGroup (cgroup name)
 //
 // The TUI is interactive: pressing 'q' or 'x' will exit the program,
 // pressing 'r' or 'l' will redraw the TUI, and pressing any other key will
@@ -71,18 +73,23 @@ func drawTUI(objs counterObjects, startTime time.Time) {
 		switch event.Rune() {
 		case '0':
 			tableSort = bitrateSort
+
 			statsTable.Select(0, 0)
 		case '1':
 			tableSort = packetSort
+
 			statsTable.Select(0, 0)
 		case '2':
 			tableSort = bytesSort
+
 			statsTable.Select(0, 0)
 		case '3':
 			tableSort = srcIPSort
+
 			statsTable.Select(0, 0)
 		case '4':
 			tableSort = dstIPSort
+
 			statsTable.Select(0, 0)
 		case 'q', 'x', 'Q', 'X':
 			app.Stop()
@@ -97,6 +104,7 @@ func drawTUI(objs counterObjects, startTime time.Time) {
 	// info view
 	infoView := tview.NewTextView().
 		SetTextColor(tcell.ColorYellow)
+
 	switch {
 	case *useCGroup != "":
 		infoView.SetText("CGroup eBPF mode w/ partial PID and comm tracking")
@@ -107,7 +115,6 @@ func drawTUI(objs counterObjects, startTime time.Time) {
 			*xdpMode, *ifname))
 	default:
 		infoView.SetText(fmt.Sprintf("TC (Traffic Control) eBPF mode on interface %v", *ifname))
-
 	}
 
 	// navigation
@@ -148,6 +155,7 @@ func drawTUI(objs counterObjects, startTime time.Time) {
 //   - Code (ICMP code, or 0 for non-ICMP packets)
 //   - PID (process ID)
 //   - Comm (process name)
+//   - CGroup (cgroup name)
 //
 // Note that the table is cleared and recreated on each iteration, so any cell
 // attributes are lost on each iteration.
@@ -165,6 +173,12 @@ func updateStatsTable(app *tview.Application, table *tview.Table, tableSort *fun
 		"code",    // column 7
 		"pid",     // column 8
 		"comm",    // column 9
+		"cgroup",  // column 10
+	}
+
+	// remove pid, comm and cgroup columns if not in use
+	if !*useKProbes && *useCGroup == "" {
+		headers = headers[:8]
 	}
 
 	for {
@@ -237,16 +251,8 @@ func updateStatsTable(app *tview.Application, table *tview.Table, tableSort *fun
 					SetExpansion(1))
 			}
 
-			// populate pid and comm
-			if *useKProbes {
-				table.SetCell(i+1, 8, tview.NewTableCell(strconv.FormatInt(int64(v.Pid), 10)).
-					SetTextColor(tcell.ColorWhite).
-					SetExpansion(1))
-
-				table.SetCell(i+1, 9, tview.NewTableCell(v.Comm).
-					SetTextColor(tcell.ColorWhite).
-					SetExpansion(1))
-			} else if *useCGroup != "" && v.Pid > 0 && v.Comm != "" {
+			// populate pid, comm and cgroup
+			if *useKProbes || *useCGroup != "" {
 				table.SetCell(i+1, 8, tview.NewTableCell(strconv.FormatInt(int64(v.Pid), 10)).
 					SetTextColor(tcell.ColorWhite).
 					SetExpansion(1))
@@ -255,12 +261,7 @@ func updateStatsTable(app *tview.Application, table *tview.Table, tableSort *fun
 					SetTextColor(tcell.ColorWhite).
 					SetExpansion(1))
 
-			} else {
-				table.SetCell(i+1, 8, tview.NewTableCell("").
-					SetTextColor(tcell.ColorWhite).
-					SetExpansion(1))
-
-				table.SetCell(i+1, 9, tview.NewTableCell("").
+				table.SetCell(i+1, 10, tview.NewTableCell(v.Cgroup).
 					SetTextColor(tcell.ColorWhite).
 					SetExpansion(1))
 			}

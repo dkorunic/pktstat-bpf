@@ -18,14 +18,15 @@ type counterSockinfo struct {
 }
 
 type counterStatkey struct {
-	Srcip   struct{ In6U struct{ U6Addr8 [16]uint8 } }
-	Dstip   struct{ In6U struct{ U6Addr8 [16]uint8 } }
-	SrcPort uint16
-	DstPort uint16
-	Proto   uint8
-	_       [3]byte
-	Pid     int32
-	Comm    [16]int8
+	Srcip    struct{ In6U struct{ U6Addr8 [16]uint8 } }
+	Dstip    struct{ In6U struct{ U6Addr8 [16]uint8 } }
+	Cgroupid uint64
+	Comm     [16]int8
+	Pid      int32
+	SrcPort  uint16
+	DstPort  uint16
+	Proto    uint8
+	_        [7]byte
 }
 
 type counterStatvalue struct {

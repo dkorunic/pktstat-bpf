@@ -53,7 +53,7 @@ func parseFags() {
 	jsonOutput = fs.Bool('j', "json", "if true, output in JSON format")
 	useCGroup = fs.String('c', "cgroup", "", "the path to a CGroup V2 to measure statistics on")
 	useXDP = fs.Bool('x', "xdp", "if true, use XDP instead of TC (this disables egress statistics)")
-	useKProbes = fs.Bool('k', "kprobes", "if true, use KProbes for per-proces TCP/UDP statistics")
+	useKProbes = fs.Bool('k', "kprobes", "if true, use KProbes for per-process TCP/UDP statistics")
 	enableTUI = fs.Bool('g', "tui", "if true, enable TUI")
 
 	version = fs.BoolLong("version", "display program version")
