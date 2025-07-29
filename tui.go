@@ -171,9 +171,9 @@ func updateStatsTable(app *tview.Application, table *tview.Table, tableSort *fun
 		"dst",     // column 5
 		"type",    // column 6
 		"code",    // column 7
-		"pid",     // column 8
-		"comm",    // column 9
-		"cgroup",  // column 10
+		"pid",     // column 8, only kprobes and cgroup
+		"comm",    // column 9, only kprobes and cgroup
+		"cgroup",  // column 10, only kprobes and cgroup
 	}
 
 	// remove pid, comm and cgroup columns if not in use

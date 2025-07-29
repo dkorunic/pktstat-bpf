@@ -73,6 +73,8 @@ func main() {
 		links = startCgroup(objs, *useCGroup, links)
 	// KProbes w/ PID tracking
 	case *useKProbes:
+		cgroupCacheInit()
+
 		hooks := []kprobeHook{
 			{kprobe: "tcp_sendmsg", prog: objs.TcpSendmsg},
 			{kprobe: "tcp_cleanup_rbuf", prog: objs.TcpCleanupRbuf},
@@ -87,6 +89,8 @@ func main() {
 		links = startKProbes(hooks, links)
 	// XDP
 	case *useXDP:
+		cgroupCacheInit()
+
 		links = startXDP(objs, iface, links)
 	// TC
 	default:

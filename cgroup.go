@@ -50,12 +50,10 @@ var (
 //
 // The function is safe to call concurrently.
 func cgroupPathDecode(id uint64) string {
-	cgroupOnce.Do(func() {
-		cgroupCache = make(map[uint64]string)
-
-		// initial cache refresh and fs watcher initialization
-		go cgroupPathWatcher(CgroupRootPath)
-	})
+	// ID 0 is not a valid Cgroup ID
+	if id == 0 {
+		return ""
+	}
 
 	cgroupCacheLock.Lock()
 	defer cgroupCacheLock.Unlock()
@@ -75,6 +73,20 @@ func cgroupPathDecode(id uint64) string {
 
 	// return the result
 	return cgroupCache[id]
+}
+
+// cgroupCacheInit initializes the cgroup cache and starts a goroutine to watch the cgroup filesystem for create events.
+//
+// The function creates an empty map to store the cgroup IDs and their corresponding paths and then starts a goroutine to watch the cgroup filesystem for create events. When a create event is received, the goroutine refreshes the cache.
+//
+// The function is safe to call concurrently.
+func cgroupCacheInit() {
+	cgroupOnce.Do(func() {
+		cgroupCache = make(map[uint64]string)
+
+		// initial cache refresh and fs watcher initialization
+		go cgroupPathWatcher(CgroupRootPath)
+	})
 }
 
 // cgroupCacheRefresh refreshes the cache with the current cgroup paths.
@@ -98,17 +110,18 @@ func cgroupCacheRefresh(dir string) {
 //
 // The function is safe to call concurrently.
 func cgroupPathWatcher(dir string) {
+	// initial cache refresh
+	cgroupCacheLock.Lock()
+	cgroupCacheRefresh(dir)
+	cgroupCacheLock.Unlock()
+
+	// start watcher
 	w, err := fsnotify.NewWatcher()
 	if err != nil {
 		return
 	}
 
 	defer func() { _ = w.Close() }()
-
-	// initial cache refresh
-	cgroupCacheLock.Lock()
-	cgroupCacheRefresh(dir)
-	cgroupCacheLock.Unlock()
 
 	err = w.Add(dir)
 	if err != nil {
@@ -141,6 +154,7 @@ func cgroupWalk(dir string) (map[uint64]string, error) {
 
 	err := filepath.WalkDir(dir, func(path string, d fs.DirEntry, err error) error {
 		if err != nil {
+			// ignore disappearing files/directories
 			if errors.Is(err, fs.ErrNotExist) {
 				return nil
 			}
@@ -152,6 +166,7 @@ func cgroupWalk(dir string) (map[uint64]string, error) {
 
 		i, err := getInodeID(path)
 		if err != nil {
+			// ignore disappearing files/directories
 			if errors.Is(err, fs.ErrNotExist) {
 				return nil
 			}
