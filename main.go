@@ -70,6 +70,8 @@ func main() {
 
 	switch {
 	case *useCGroup != "":
+		cgroupCacheInit()
+
 		links = startCgroup(objs, *useCGroup, links)
 	// KProbes w/ PID tracking
 	case *useKProbes:
@@ -89,8 +91,6 @@ func main() {
 		links = startKProbes(hooks, links)
 	// XDP
 	case *useXDP:
-		cgroupCacheInit()
-
 		links = startXDP(objs, iface, links)
 	// TC
 	default:
