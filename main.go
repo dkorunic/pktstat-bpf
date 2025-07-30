@@ -70,12 +70,12 @@ func main() {
 
 	switch {
 	case *useCGroup != "":
-		cgroupCacheInit()
+		cGroupCacheInit()
 
 		links = startCgroup(objs, *useCGroup, links)
 	// KProbes w/ PID tracking
 	case *useKProbes:
-		cgroupCacheInit()
+		cGroupCacheInit()
 
 		hooks := []kprobeHook{
 			{kprobe: "tcp_sendmsg", prog: objs.TcpSendmsg},

@@ -35,11 +35,21 @@ tasks:
     cmds:
       - gomajor list
 
+  update-tools:
+    cmds:
+      - go install github.com/daixiang0/gci@latest
+      - go install mvdan.cc/gofumpt@latest
+      - go install github.com/dkorunic/betteralign/cmd/betteralign@latest
+
   fmt:
     cmds:
       - gci write .
       - gofumpt -l -w .
       - betteralign -apply ./...
+
+  modernize:
+    cmds:
+      - go run golang.org/x/tools/gopls/internal/analysis/modernize/cmd/modernize@latest -fix -test ./...
 
   generate:
     cmds:
@@ -63,6 +73,38 @@ tasks:
       - task: fmt
       - golangci-lint run --timeout 5m
 
+  lint-nil:
+    cmds:
+      - task: fmt
+      - nilaway ./...
+
+  tools:
+    cmds:
+      - task: gofumpt
+      - task: gci
+      - task: betteralign
+
   release:
     cmds:
       - goreleaser release --clean -p 4
+
+  gci:
+    internal: true
+    status:
+      - which gci
+    cmds:
+      - go install github.com/daixiang0/gci@latest
+
+  gofumpt:
+    internal: true
+    status:
+      - which gofumpt
+    cmds:
+      - go install mvdan.cc/gofumpt@latest
+
+  betteralign:
+    internal: true
+    status:
+      - which betteralign
+    cmds:
+      - go install github.com/dkorunic/betteralign/cmd/betteralign@latest

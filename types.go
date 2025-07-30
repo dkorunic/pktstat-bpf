@@ -32,7 +32,7 @@ type statEntry struct {
 	DstIP   netip.Addr `json:"dstIp"`
 	Proto   string     `json:"proto"`
 	Comm    string     `json:"comm,omitempty"`
-	Cgroup  string     `json:"cgroup,omitempty"`
+	CGroup  string     `json:"cgroup,omitempty"`
 	Bytes   uint64     `json:"bytes"`
 	Packets uint64     `json:"packets"`
 	Bitrate float64    `json:"bitrate"`

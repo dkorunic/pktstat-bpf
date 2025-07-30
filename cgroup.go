@@ -32,55 +32,55 @@ import (
 	"syscall"
 )
 
-const CgroupRootPath = "/sys/fs/cgroup"
+const CGroupRootPath = "/sys/fs/cgroup"
 
 var (
-	cgroupCache    map[uint64]string
-	cgroupInitOnce sync.Once
+	cGroupCache    map[uint64]string
+	cGroupInitOnce sync.Once
 
 	ErrNotStatT = errors.New("not a syscall.Stat_t") // not a syscall.Stat_t for path %s
 )
 
-// cgroupToPath takes a cgroup ID and returns the corresponding path in the cgroup filesystem.
+// cGroupToPath takes a cgroup ID and returns the corresponding path in the cgroup filesystem.
 // The function will cache cgroup paths for better performance, but it will also invalidate the cache
 // if it detects a change in the cgroup filesystem. If the cgroup ID is not found in the cache, it will
 // refresh the cache and return an empty string.
 //
 // The function is safe to call concurrently.
-func cgroupToPath(id uint64) string {
+func cGroupToPath(id uint64) string {
 	// ID 0 is not a valid Cgroup ID
 	if id == 0 {
 		return ""
 	}
 
 	// fetch from cache first
-	if p, ok := cgroupCache[id]; ok {
+	if p, ok := cGroupCache[id]; ok {
 		return p
 	}
 
 	// force the cache refresh if missing
-	cgroupCacheRefresh(CgroupRootPath)
+	cgroupCacheRefresh(CGroupRootPath)
 
 	// create negative cache entry if still missing
-	if _, ok := cgroupCache[id]; !ok {
-		cgroupCache[id] = fmt.Sprintf("cgroup-id: %v", id)
+	if _, ok := cGroupCache[id]; !ok {
+		cGroupCache[id] = fmt.Sprintf("cgroup-id: %v", id)
 	}
 
 	// return the result, positive or negative
-	return cgroupCache[id]
+	return cGroupCache[id]
 }
 
-// cgroupCacheInit initializes the cgroup cache and starts a goroutine to watch the cgroup filesystem for create events.
+// cGroupCacheInit initializes the cgroup cache and starts a goroutine to watch the cgroup filesystem for create events.
 //
 // The function creates an empty map to store the cgroup IDs and their corresponding paths and then starts a goroutine to watch the cgroup filesystem for create events. When a create event is received, the goroutine refreshes the cache.
 //
 // The function is safe to call concurrently.
-func cgroupCacheInit() {
-	cgroupInitOnce.Do(func() {
-		cgroupCache = make(map[uint64]string)
+func cGroupCacheInit() {
+	cGroupInitOnce.Do(func() {
+		cGroupCache = make(map[uint64]string)
 
 		// initial cache refresh
-		cgroupCacheRefresh(CgroupRootPath)
+		cgroupCacheRefresh(CGroupRootPath)
 	})
 }
 
@@ -92,18 +92,18 @@ func cgroupCacheInit() {
 //
 // The function is safe to call concurrently.
 func cgroupCacheRefresh(dir string) {
-	if mapping, err := cgroupWalk(dir); err == nil {
-		maps.Copy(cgroupCache, mapping)
+	if mapping, err := cGroupWalk(dir); err == nil {
+		maps.Copy(cGroupCache, mapping)
 	}
 }
 
-// cgroupWalk walks the cgroup filesystem and returns a mapping of cgroup IDs to their corresponding paths.
+// cGroupWalk walks the cgroup filesystem and returns a mapping of cgroup IDs to their corresponding paths.
 //
 // The function takes a directory as an argument, which is the root of the cgroup filesystem. It walks the directory and its subdirectories, and for each subdirectory, it extracts the cgroup ID from the subdirectory's inode using `getInodeID`.
 // The function returns a mapping of cgroup IDs to their corresponding paths. If an error occurs during the walk, it is returned as the second argument.
 //
 // The function is safe to call concurrently.
-func cgroupWalk(dir string) (map[uint64]string, error) {
+func cGroupWalk(dir string) (map[uint64]string, error) {
 	mapping := map[uint64]string{}
 
 	err := filepath.WalkDir(dir, func(path string, d fs.DirEntry, err error) error {

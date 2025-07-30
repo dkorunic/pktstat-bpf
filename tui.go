@@ -25,6 +25,7 @@ package main
 import (
 	"fmt"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/gdamore/tcell/v2"
@@ -261,7 +262,8 @@ func updateStatsTable(app *tview.Application, table *tview.Table, tableSort *fun
 					SetTextColor(tcell.ColorWhite).
 					SetExpansion(1))
 
-				table.SetCell(i+1, 10, tview.NewTableCell(v.Cgroup).
+				// trim system CgroupRootPath from the Cgroup path
+				table.SetCell(i+1, 10, tview.NewTableCell(strings.TrimPrefix(v.CGroup, CGroupRootPath)).
 					SetTextColor(tcell.ColorWhite).
 					SetExpansion(1))
 			}
