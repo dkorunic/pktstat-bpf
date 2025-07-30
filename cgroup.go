@@ -25,20 +25,18 @@ import (
 	"errors"
 	"fmt"
 	"io/fs"
+	"maps"
 	"os"
 	"path/filepath"
 	"sync"
 	"syscall"
-
-	"github.com/fsnotify/fsnotify"
 )
 
 const CgroupRootPath = "/sys/fs/cgroup"
 
 var (
-	cgroupCache     map[uint64]string
-	cgroupCacheLock sync.Mutex
-	cgroupOnce      sync.Once
+	cgroupCache map[uint64]string
+	cgroupOnce  sync.Once
 
 	ErrNotStatT = errors.New("not a syscall.Stat_t") // not a syscall.Stat_t for path %s
 )
@@ -55,9 +53,6 @@ func cgroupPathDecode(id uint64) string {
 		return ""
 	}
 
-	cgroupCacheLock.Lock()
-	defer cgroupCacheLock.Unlock()
-
 	// fetch from cache first
 	if p, ok := cgroupCache[id]; ok {
 		return p
@@ -68,7 +63,7 @@ func cgroupPathDecode(id uint64) string {
 
 	// create negative cache entry if still missing
 	if _, ok := cgroupCache[id]; !ok {
-		cgroupCache[id] = ""
+		cgroupCache[id] = fmt.Sprintf("cgroup-id: %v", id)
 	}
 
 	// return the result, positive or negative
@@ -84,8 +79,8 @@ func cgroupCacheInit() {
 	cgroupOnce.Do(func() {
 		cgroupCache = make(map[uint64]string)
 
-		// initial cache refresh and fs watcher initialization
-		go cgroupPathWatcher(CgroupRootPath)
+		// initial cache refresh
+		cgroupCacheRefresh(CgroupRootPath)
 	})
 }
 
@@ -98,48 +93,7 @@ func cgroupCacheInit() {
 // The function is safe to call concurrently.
 func cgroupCacheRefresh(dir string) {
 	if mapping, err := cgroupWalk(dir); err == nil {
-		for i, name := range mapping {
-			cgroupCache[i] = name
-		}
-	}
-}
-
-// cgroupPathWatcher watches the cgroup filesystem for create events and refreshes the cgroup cache whenever a new cgroup is created.
-//
-// The function takes a directory as an argument, which is the root of the cgroup filesystem. It starts a fsnotify watcher and adds the given directory to the watcher. When a create event is received, the function refreshes the cgroup cache.
-//
-// The function is safe to call concurrently.
-func cgroupPathWatcher(dir string) {
-	// initial cache refresh
-	cgroupCacheLock.Lock()
-	cgroupCacheRefresh(dir)
-	cgroupCacheLock.Unlock()
-
-	// start watcher
-	w, err := fsnotify.NewWatcher()
-	if err != nil {
-		return
-	}
-
-	defer func() { _ = w.Close() }()
-
-	err = w.Add(dir)
-	if err != nil {
-		return
-	}
-
-	// monitor create events
-	for {
-		select {
-		case event := <-w.Events:
-			if event.Op&fsnotify.Create == fsnotify.Create {
-				cgroupCacheLock.Lock()
-				cgroupCacheRefresh(dir)
-				cgroupCacheLock.Unlock()
-			}
-		case <-w.Errors:
-			continue
-		}
+		maps.Copy(cgroupCache, mapping)
 	}
 }
 
