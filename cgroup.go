@@ -35,19 +35,19 @@ import (
 const CgroupRootPath = "/sys/fs/cgroup"
 
 var (
-	cgroupCache map[uint64]string
-	cgroupOnce  sync.Once
+	cgroupCache    map[uint64]string
+	cgroupInitOnce sync.Once
 
 	ErrNotStatT = errors.New("not a syscall.Stat_t") // not a syscall.Stat_t for path %s
 )
 
-// cgroupPathDecode takes a cgroup ID and returns the corresponding path in the cgroup filesystem.
+// cgroupToPath takes a cgroup ID and returns the corresponding path in the cgroup filesystem.
 // The function will cache cgroup paths for better performance, but it will also invalidate the cache
 // if it detects a change in the cgroup filesystem. If the cgroup ID is not found in the cache, it will
 // refresh the cache and return an empty string.
 //
 // The function is safe to call concurrently.
-func cgroupPathDecode(id uint64) string {
+func cgroupToPath(id uint64) string {
 	// ID 0 is not a valid Cgroup ID
 	if id == 0 {
 		return ""
@@ -76,7 +76,7 @@ func cgroupPathDecode(id uint64) string {
 //
 // The function is safe to call concurrently.
 func cgroupCacheInit() {
-	cgroupOnce.Do(func() {
+	cgroupInitOnce.Do(func() {
 		cgroupCache = make(map[uint64]string)
 
 		// initial cache refresh

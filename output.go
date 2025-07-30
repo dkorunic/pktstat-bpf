@@ -67,8 +67,8 @@ func processMap(m *ebpf.Map, start time.Time, sortFunc func([]statEntry)) ([]sta
 			Packets: val.Packets,
 			Bitrate: 8 * float64(val.Bytes) / dur,
 			Pid:     key.Pid,
-			Comm:    comm2String(key.Comm[:]),
-			Cgroup:  cgroupPathDecode(key.Cgroupid),
+			Comm:    commToString(key.Comm[:]),
+			Cgroup:  cgroupToPath(key.Cgroupid),
 		})
 	}
 
@@ -217,13 +217,13 @@ func outputJSON(m []statEntry) string {
 	return string(out)
 }
 
-// comm2String converts a byte slice to a string, trimming any null bytes.
+// commToString converts a byte slice to a string, trimming any null bytes.
 //
 // It takes a byte slice as its parameter and returns a string.
 // If the byte slice is empty, the function returns the string "kernel".
 // Otherwise, it creates a new byte slice, copies the input byte slice into it,
 // trims any null bytes from the end of the slice, and returns the result as a string.
-func comm2String(bs []int8) string {
+func commToString(bs []int8) string {
 	b := make([]byte, len(bs))
 	for i, v := range bs {
 		b[i] = byte(v)
