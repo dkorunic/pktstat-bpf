@@ -173,34 +173,43 @@ func getInodeID(path string) (uint64, error) {
 	return s.Ino, nil
 }
 
-// cGroupWatcher reads events from the PerfCgroupEvent perf map and updates the cache of cgroup IDs to their corresponding paths.
+// cGroupWatcher watches the cgroup filesystem for create events and updates the cgroup cache with the new cgroup IDs and their corresponding paths.
 //
-// The function takes a cgroupObjects as an argument, which contains the PerfCgroupEvent perf map. It reads events from the map and for each event, it updates the cache of cgroup IDs to their corresponding paths.
+// The function takes a cgroupObjects structure as an argument, which contains the file descriptors of the cgroup filesystem and the perf event map. The function returns a perf.Reader object which can be used to read the events from the perf event map, and an error if any occurred during the creation of the perf.Reader object.
 //
 // The function is safe to call concurrently.
-func cGroupWatcher(objs cgroupObjects) {
+//
+// The returned perf.Reader object will be closed when the returned error is ErrClosed.
+func cGroupWatcher(objs cgroupObjects) (*perf.Reader, error) {
 	rd, err := perf.NewReader(objs.PerfCgroupEvent, PerfBufferPages*os.Getpagesize())
 	if err != nil {
-		return
+		return nil, err
 	}
 
-	defer func() { _ = rd.Close() }()
+	go func() {
+		var event cgroupCgroupevent
+		var r perf.Record
 
-	var event cgroupCgroupevent
+		for {
+			r, err = rd.Read()
+			if err != nil {
+				// reader has been closed
+				if errors.Is(err, perf.ErrClosed) {
+					return
+				}
 
-	for {
-		r, err := rd.Read()
+				continue
+			}
 
-		if err != nil && errors.Is(err, perf.ErrClosed) {
-			return
+			if err = binary.Read(bytes.NewBuffer(r.RawSample), binary.LittleEndian, &event); err != nil {
+				continue
+			}
+
+			cGroupCacheLock.Lock()
+			cGroupCache[event.Cgroupid] = bsliceToString(event.Path[:])
+			cGroupCacheLock.Unlock()
 		}
+	}()
 
-		if err := binary.Read(bytes.NewBuffer(r.RawSample), binary.LittleEndian, &event); err != nil {
-			continue
-		}
-
-		cGroupCacheLock.Lock()
-		cGroupCache[event.Cgroupid] = bsliceToString(event.Path[:])
-		cGroupCacheLock.Unlock()
-	}
+	return rd, nil
 }

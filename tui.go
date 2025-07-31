@@ -182,94 +182,97 @@ func updateStatsTable(app *tview.Application, table *tview.Table, tableSort *fun
 		headers = headers[:8]
 	}
 
+	var m []statEntry
+
 	for {
-		table.Clear()
+		app.QueueUpdateDraw(func() {
+			table.Clear()
 
-		for i, v := range headers {
-			table.SetCell(0, i, &tview.TableCell{
-				Text:            v,
-				NotSelectable:   true,
-				Align:           tview.AlignLeft,
-				Color:           tcell.ColorLightYellow,
-				BackgroundColor: tcell.ColorDefault,
-				Attributes:      tcell.AttrBold,
-			})
-		}
-
-		m, _ := processMap(objs.PktCount, startTime, *tableSort)
-
-		for i, v := range m {
-			// populate bitrate, packets, bytes and proto
-			table.SetCell(i+1, 0, tview.NewTableCell(formatBitrate(v.Bitrate)).
-				SetTextColor(tcell.ColorWhite).
-				SetExpansion(1))
-
-			table.SetCell(i+1, 1, tview.NewTableCell(strconv.FormatUint(v.Packets, 10)).
-				SetTextColor(tcell.ColorWhite).
-				SetExpansion(1))
-
-			table.SetCell(i+1, 2, tview.NewTableCell(strconv.FormatUint(v.Bytes, 10)).
-				SetTextColor(tcell.ColorWhite).
-				SetExpansion(1))
-
-			table.SetCell(i+1, 3, tview.NewTableCell(v.Proto).
-				SetTextColor(tcell.ColorWhite).
-				SetExpansion(1))
-
-			// populate src, dst, src port, dst port, type and code
-			switch v.Proto {
-			case "ICMPv4", "IPv6-ICMP":
-				table.SetCell(i+1, 4, tview.NewTableCell(v.SrcIP.String()).
-					SetTextColor(tcell.ColorWhite).
-					SetExpansion(1))
-
-				table.SetCell(i+1, 5, tview.NewTableCell(v.DstIP.String()).
-					SetTextColor(tcell.ColorWhite).
-					SetExpansion(1))
-
-				table.SetCell(i+1, 6, tview.NewTableCell(strconv.Itoa(int(v.SrcPort))).
-					SetTextColor(tcell.ColorWhite).
-					SetExpansion(1))
-
-				table.SetCell(i+1, 7, tview.NewTableCell(strconv.Itoa(int(v.DstPort))).
-					SetTextColor(tcell.ColorWhite).
-					SetExpansion(1))
-			default:
-				table.SetCell(i+1, 4, tview.NewTableCell(fmt.Sprintf("%v:%d", v.SrcIP, v.SrcPort)).
-					SetTextColor(tcell.ColorWhite).
-					SetExpansion(1))
-
-				table.SetCell(i+1, 5, tview.NewTableCell(fmt.Sprintf("%v:%d", v.DstIP, v.DstPort)).
-					SetTextColor(tcell.ColorWhite).
-					SetExpansion(1))
-
-				table.SetCell(i+1, 6, tview.NewTableCell("").
-					SetTextColor(tcell.ColorWhite).
-					SetExpansion(1))
-
-				table.SetCell(i+1, 7, tview.NewTableCell("").
-					SetTextColor(tcell.ColorWhite).
-					SetExpansion(1))
+			for i, v := range headers {
+				table.SetCell(0, i, &tview.TableCell{
+					Text:            v,
+					NotSelectable:   true,
+					Align:           tview.AlignLeft,
+					Color:           tcell.ColorLightYellow,
+					BackgroundColor: tcell.ColorDefault,
+					Attributes:      tcell.AttrBold,
+				})
 			}
 
-			// populate pid, comm and cgroup
-			if *useKProbes || *useCGroup != "" {
-				table.SetCell(i+1, 8, tview.NewTableCell(strconv.FormatInt(int64(v.Pid), 10)).
+			m, _ = processMap(objs.PktCount, startTime, *tableSort)
+
+			for i, v := range m {
+				// populate bitrate, packets, bytes and proto
+				table.SetCell(i+1, 0, tview.NewTableCell(formatBitrate(v.Bitrate)).
 					SetTextColor(tcell.ColorWhite).
 					SetExpansion(1))
 
-				table.SetCell(i+1, 9, tview.NewTableCell(v.Comm).
+				table.SetCell(i+1, 1, tview.NewTableCell(strconv.FormatUint(v.Packets, 10)).
 					SetTextColor(tcell.ColorWhite).
 					SetExpansion(1))
 
-				// trim system CgroupRootPath from the Cgroup path
-				table.SetCell(i+1, 10, tview.NewTableCell(strings.TrimPrefix(v.CGroup, CGroupRootPath)).
+				table.SetCell(i+1, 2, tview.NewTableCell(strconv.FormatUint(v.Bytes, 10)).
 					SetTextColor(tcell.ColorWhite).
 					SetExpansion(1))
+
+				table.SetCell(i+1, 3, tview.NewTableCell(v.Proto).
+					SetTextColor(tcell.ColorWhite).
+					SetExpansion(1))
+
+				// populate src, dst, src port, dst port, type and code
+				switch v.Proto {
+				case "ICMPv4", "IPv6-ICMP":
+					table.SetCell(i+1, 4, tview.NewTableCell(v.SrcIP.String()).
+						SetTextColor(tcell.ColorWhite).
+						SetExpansion(1))
+
+					table.SetCell(i+1, 5, tview.NewTableCell(v.DstIP.String()).
+						SetTextColor(tcell.ColorWhite).
+						SetExpansion(1))
+
+					table.SetCell(i+1, 6, tview.NewTableCell(strconv.Itoa(int(v.SrcPort))).
+						SetTextColor(tcell.ColorWhite).
+						SetExpansion(1))
+
+					table.SetCell(i+1, 7, tview.NewTableCell(strconv.Itoa(int(v.DstPort))).
+						SetTextColor(tcell.ColorWhite).
+						SetExpansion(1))
+				default:
+					table.SetCell(i+1, 4, tview.NewTableCell(fmt.Sprintf("%v:%d", v.SrcIP, v.SrcPort)).
+						SetTextColor(tcell.ColorWhite).
+						SetExpansion(1))
+
+					table.SetCell(i+1, 5, tview.NewTableCell(fmt.Sprintf("%v:%d", v.DstIP, v.DstPort)).
+						SetTextColor(tcell.ColorWhite).
+						SetExpansion(1))
+
+					table.SetCell(i+1, 6, tview.NewTableCell("").
+						SetTextColor(tcell.ColorWhite).
+						SetExpansion(1))
+
+					table.SetCell(i+1, 7, tview.NewTableCell("").
+						SetTextColor(tcell.ColorWhite).
+						SetExpansion(1))
+				}
+
+				// populate pid, comm and cgroup
+				if *useKProbes || *useCGroup != "" {
+					table.SetCell(i+1, 8, tview.NewTableCell(strconv.FormatInt(int64(v.Pid), 10)).
+						SetTextColor(tcell.ColorWhite).
+						SetExpansion(1))
+
+					table.SetCell(i+1, 9, tview.NewTableCell(v.Comm).
+						SetTextColor(tcell.ColorWhite).
+						SetExpansion(1))
+
+					// trim system CgroupRootPath from the Cgroup path
+					table.SetCell(i+1, 10, tview.NewTableCell(strings.TrimPrefix(v.CGroup, CGroupRootPath)).
+						SetTextColor(tcell.ColorWhite).
+						SetExpansion(1))
+				}
 			}
-		}
+		})
 
-		app.Draw()
 		time.Sleep(*refresh)
 	}
 }

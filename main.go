@@ -83,7 +83,10 @@ func main() {
 		links = startCgroup(objsCounter, *useCGroup, links)
 		links = startCGroupTrace(objsCgroup, links)
 
-		go cGroupWatcher(objsCgroup)
+		rd, err := cGroupWatcher(objsCgroup)
+		if err != nil {
+			defer func() { _ = rd.Close() }()
+		}
 	// KProbes w/ PID tracking
 	case *useKProbes:
 		cGroupCacheInit()
@@ -102,7 +105,10 @@ func main() {
 		links = startKProbes(hooks, links)
 		links = startCGroupTrace(objsCgroup, links)
 
-		go cGroupWatcher(objsCgroup)
+		rd, err := cGroupWatcher(objsCgroup)
+		if err != nil {
+			defer func() { _ = rd.Close() }()
+		}
 	// XDP
 	case *useXDP:
 		links = startXDP(objsCounter, iface, links)
@@ -141,7 +147,9 @@ func main() {
 
 		<-c1.Done()
 
-		m, err := processMap(objsCounter.PktCount, startTime, bitrateSort)
+		var m []statEntry
+
+		m, err = processMap(objsCounter.PktCount, startTime, bitrateSort)
 		if err != nil {
 			log.Fatalf("Error reading eBPF map: %v", err)
 		}
