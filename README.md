@@ -96,9 +96,9 @@ With `--xdp` program will switch from TC eBPF mode to XDP eBPF mode, working in 
 
 Additionally it is possible to change XDP attach mode with `--xdp_mode` from `auto` (best-effort between native and generic) to `native` or `offload`, for NIC drivers that support XDP or even NICs that have hardware XDP support.
 
-With `--kprobes` program will switch to Kprobe mode and track TCP and UDP traffic per process. Performance will be even more degraded compared to TC and XDP mode, but all per-PID traffic will be visible, inside of all Cgroups, containers, K8s pods etc.
+With `--kprobes` program will switch to Kprobe mode and track TCP and UDP traffic per process. Performance will be even more degraded compared to TC and XDP mode, but all per-process traffic will be visible, inside of all Cgroups, containers, K8s pods etc. Additional details such as process command name, process ID and Control Group will be shown as well.
 
-With `--cgroup` parameter with path to the CGroup it is possible to measure ingress and egress traffic for a specific CGroup.
+With `--cgroup` parameter with path to the CGroup it is possible to measure ingress and egress traffic for a specific Control Group. Additional details such as process command name and process ID will be shown.
 
 ## Star History
 
