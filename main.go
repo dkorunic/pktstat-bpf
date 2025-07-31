@@ -40,24 +40,32 @@ import (
 )
 
 func main() {
-	parseFags()
+	parseFlags()
 
 	// Remove resource limits for kernels <5.11
 	if err := rlimit.RemoveMemlock(); err != nil {
 		log.Fatalf("Error removing memlock: %v", err)
 	}
 
-	// Load the compiled eBPF ELF and load it into the kernel
-	var objs counterObjects
-	if err := loadCounterObjects(&objs, nil); err != nil {
+	// Load the compiled counter eBPF ELF and load it into the kernel
+	var objsCounter counterObjects
+	if err := loadCounterObjects(&objsCounter, nil); err != nil {
 		log.Fatalf("Error loading eBPF objects: %v", err)
 	}
 
-	defer func() { _ = objs.Close() }()
+	defer func() { _ = objsCounter.Close() }()
+
+	// Load the compiled cgroup eBPF ELF and load it into the kernel
+	var objsCgroup cgroupObjects
+	if err := loadCgroupObjects(&objsCgroup, nil); err != nil {
+		log.Fatalf("Error loading eBPF objects: %v", err) //nolint:gocritic
+	}
+
+	defer func() { _ = objsCgroup.Close() }()
 
 	iface, err := net.InterfaceByName(*ifname)
 	if err != nil {
-		log.Fatalf("Error getting interface %q: %v", *ifname, err) //nolint:gocritic
+		log.Fatalf("Error getting interface %q: %v", *ifname, err)
 	}
 
 	var links []link.Link
@@ -72,29 +80,35 @@ func main() {
 	case *useCGroup != "":
 		cGroupCacheInit()
 
-		links = startCgroup(objs, *useCGroup, links)
+		links = startCgroup(objsCounter, *useCGroup, links)
+		links = startCGroupTrace(objsCgroup, links)
+
+		go cGroupWatcher(objsCgroup)
 	// KProbes w/ PID tracking
 	case *useKProbes:
 		cGroupCacheInit()
 
 		hooks := []kprobeHook{
-			{kprobe: "tcp_sendmsg", prog: objs.TcpSendmsg},
-			{kprobe: "tcp_cleanup_rbuf", prog: objs.TcpCleanupRbuf},
-			{kprobe: "ip_send_skb", prog: objs.IpSendSkb},
-			{kprobe: "skb_consume_udp", prog: objs.SkbConsumeUdp},
-			{kprobe: "__icmp_send", prog: objs.IcmpSend},
-			{kprobe: "icmp6_send", prog: objs.Icmp6Send},
-			{kprobe: "icmp_rcv", prog: objs.IcmpRcv},
-			{kprobe: "icmpv6_rcv", prog: objs.Icmpv6Rcv},
+			{kprobe: "tcp_sendmsg", prog: objsCounter.TcpSendmsg},
+			{kprobe: "tcp_cleanup_rbuf", prog: objsCounter.TcpCleanupRbuf},
+			{kprobe: "ip_send_skb", prog: objsCounter.IpSendSkb},
+			{kprobe: "skb_consume_udp", prog: objsCounter.SkbConsumeUdp},
+			{kprobe: "__icmp_send", prog: objsCounter.IcmpSend},
+			{kprobe: "icmp6_send", prog: objsCounter.Icmp6Send},
+			{kprobe: "icmp_rcv", prog: objsCounter.IcmpRcv},
+			{kprobe: "icmpv6_rcv", prog: objsCounter.Icmpv6Rcv},
 		}
 
 		links = startKProbes(hooks, links)
+		links = startCGroupTrace(objsCgroup, links)
+
+		go cGroupWatcher(objsCgroup)
 	// XDP
 	case *useXDP:
-		links = startXDP(objs, iface, links)
+		links = startXDP(objsCounter, iface, links)
 	// TC
 	default:
-		links = startTC(objs, iface, links)
+		links = startTC(objsCounter, iface, links)
 	}
 
 	c1, cancel := context.WithCancel(context.Background())
@@ -104,7 +118,7 @@ func main() {
 
 	//nolint:nestif
 	if *enableTUI {
-		drawTUI(objs, startTime)
+		drawTUI(objsCounter, startTime)
 	} else {
 		signalCh := make(chan os.Signal, 1)
 		signal.Notify(signalCh, os.Interrupt, syscall.SIGTERM, syscall.SIGINT)
@@ -127,7 +141,7 @@ func main() {
 
 		<-c1.Done()
 
-		m, err := processMap(objs.PktCount, startTime, bitrateSort)
+		m, err := processMap(objsCounter.PktCount, startTime, bitrateSort)
 		if err != nil {
 			log.Fatalf("Error reading eBPF map: %v", err)
 		}
@@ -345,6 +359,42 @@ func startCgroup(objs counterObjects, cgroupPath string, links []link.Link) []li
 	links = append(links, l)
 
 	log.Printf("Starting on CGroup %s", cgroupPath)
+
+	return links
+}
+
+// startCGroupTrace attaches a raw tracepoint eBPF program to a kernel tracepoint.
+//
+// This function checks if the RawTracepoint program type is supported by the kernel.
+// If supported, it attaches the TraceCgroupMkdir eBPF program to the "cgroup_mkdir" tracepoint.
+//
+// Parameters:
+//
+//	objs cgroupObjects: Contains the eBPF programs, including the TraceCgroupMkdir program to be attached.
+//	links []link.Link: A slice of existing link.Link objects to which the newly attached tracepoint link will be appended.
+//
+// Returns:
+//
+//	[]link.Link: The updated slice of link.Link objects, now including the newly attached tracepoint link.
+func startCGroupTrace(objs cgroupObjects, links []link.Link) []link.Link {
+	var l link.Link
+
+	err := features.HaveProgramType(ebpf.RawTracepoint)
+	if errors.Is(err, ebpf.ErrNotSupported) {
+		log.Printf("RawTracepoint not supported on this kernel")
+
+		return links
+	}
+
+	l, err = link.AttachRawTracepoint(link.RawTracepointOptions{
+		Program: objs.TraceCgroupMkdir,
+		Name:    "cgroup_mkdir",
+	})
+	if err != nil {
+		log.Fatalf("Error attaching TraceCgroupMkdirSignal: %v", err)
+	}
+
+	links = append(links, l)
 
 	return links
 }

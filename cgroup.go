@@ -22,6 +22,8 @@
 package main
 
 import (
+	"bytes"
+	"encoding/binary"
 	"errors"
 	"fmt"
 	"io/fs"
@@ -30,13 +32,19 @@ import (
 	"path/filepath"
 	"sync"
 	"syscall"
+
+	"github.com/cilium/ebpf/perf"
 )
 
-const CGroupRootPath = "/sys/fs/cgroup"
+const (
+	CGroupRootPath  = "/sys/fs/cgroup"
+	PerfBufferPages = 16
+)
 
 var (
-	cGroupCache    map[uint64]string
-	cGroupInitOnce sync.Once
+	cGroupCache     map[uint64]string
+	cGroupCacheLock sync.RWMutex
+	cGroupInitOnce  sync.Once
 
 	ErrNotStatT = errors.New("not a syscall.Stat_t") // not a syscall.Stat_t for path %s
 )
@@ -54,12 +62,19 @@ func cGroupToPath(id uint64) string {
 	}
 
 	// fetch from cache first
+	cGroupCacheLock.RLock()
 	if p, ok := cGroupCache[id]; ok {
+		cGroupCacheLock.RUnlock()
+
 		return p
 	}
+	cGroupCacheLock.RUnlock()
 
 	// force the cache refresh if missing
 	cgroupCacheRefresh(CGroupRootPath)
+
+	cGroupCacheLock.Lock()
+	defer cGroupCacheLock.Unlock()
 
 	// create negative cache entry if still missing
 	if _, ok := cGroupCache[id]; !ok {
@@ -92,6 +107,9 @@ func cGroupCacheInit() {
 //
 // The function is safe to call concurrently.
 func cgroupCacheRefresh(dir string) {
+	cGroupCacheLock.Lock()
+	defer cGroupCacheLock.Unlock()
+
 	if mapping, err := cGroupWalk(dir); err == nil {
 		maps.Copy(cGroupCache, mapping)
 	}
@@ -153,4 +171,36 @@ func getInodeID(path string) (uint64, error) {
 	}
 
 	return s.Ino, nil
+}
+
+// cGroupWatcher reads events from the PerfCgroupEvent perf map and updates the cache of cgroup IDs to their corresponding paths.
+//
+// The function takes a cgroupObjects as an argument, which contains the PerfCgroupEvent perf map. It reads events from the map and for each event, it updates the cache of cgroup IDs to their corresponding paths.
+//
+// The function is safe to call concurrently.
+func cGroupWatcher(objs cgroupObjects) {
+	rd, err := perf.NewReader(objs.PerfCgroupEvent, PerfBufferPages*os.Getpagesize())
+	if err != nil {
+		return
+	}
+
+	defer func() { _ = rd.Close() }()
+
+	var event cgroupCgroupevent
+
+	for {
+		r, err := rd.Read()
+
+		if err != nil && errors.Is(err, perf.ErrClosed) {
+			return
+		}
+
+		if err := binary.Read(bytes.NewBuffer(r.RawSample), binary.LittleEndian, &event); err != nil {
+			continue
+		}
+
+		cGroupCacheLock.Lock()
+		cGroupCache[event.Cgroupid] = bsliceToString(event.Path[:])
+		cGroupCacheLock.Unlock()
+	}
 }

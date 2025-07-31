@@ -8,18 +8,33 @@ import (
 	_ "embed"
 	"fmt"
 	"io"
+	"structs"
 
 	"github.com/cilium/ebpf"
 )
 
 type counterSockinfo struct {
+	_    structs.HostLayout
 	Comm [16]uint8
 	Pid  int32
 }
 
 type counterStatkey struct {
-	Srcip    struct{ In6U struct{ U6Addr8 [16]uint8 } }
-	Dstip    struct{ In6U struct{ U6Addr8 [16]uint8 } }
+	_     structs.HostLayout
+	Srcip struct {
+		_    structs.HostLayout
+		In6U struct {
+			_       structs.HostLayout
+			U6Addr8 [16]uint8
+		}
+	}
+	Dstip struct {
+		_    structs.HostLayout
+		In6U struct {
+			_       structs.HostLayout
+			U6Addr8 [16]uint8
+		}
+	}
 	Cgroupid uint64
 	Comm     [16]int8
 	Pid      int32
@@ -30,6 +45,7 @@ type counterStatkey struct {
 }
 
 type counterStatvalue struct {
+	_       structs.HostLayout
 	Packets uint64
 	Bytes   uint64
 }

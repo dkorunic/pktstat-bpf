@@ -46,7 +46,7 @@ var (
 	xdpAttachFlags                                           link.XDPAttachFlags
 )
 
-func parseFags() {
+func parseFlags() {
 	fs := ff.NewFlagSet("pktstat-bpf")
 
 	help = fs.Bool('?', "help", "display help")

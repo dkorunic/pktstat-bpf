@@ -8,8 +8,8 @@
 // copies of the Software, and to permit persons to whom the Software is
 // furnished to do so, subject to the following conditions:
 //
-// The above copyright notice and this permission notice shall be included in all
-// copies or substantial portions of the Software.
+// The above copyright notice and this permission notice shall be included in
+// all copies or substantial portions of the Software.
 //
 // THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
 // IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
@@ -19,10 +19,24 @@
 // OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 // SOFTWARE.
 
-package main
+//go:build ignore
 
-//go:generate go run github.com/cilium/ebpf/cmd/bpf2go -target amd64 counter counter.c -- -I./contrib/amd64
-//go:generate go run github.com/cilium/ebpf/cmd/bpf2go -target arm64 counter counter.c -- -I./contrib/arm64
+#define s6_addr in6_u.u6_addr8
+#define s6_addr16 in6_u.u6_addr16
+#define s6_addr32 in6_u.u6_addr32
+#define inet_num sk.__sk_common.skc_num
 
-//go:generate go run github.com/cilium/ebpf/cmd/bpf2go -target amd64 cgroup cgroup.c -- -I./contrib/amd64
-//go:generate go run github.com/cilium/ebpf/cmd/bpf2go -target arm64 cgroup cgroup.c -- -I./contrib/arm64
+#define ETH_P_IP 0x0800
+#define ETH_P_IPV6 0x86DD
+#define TC_ACT_UNSPEC -1
+#define AF_INET 2
+#define AF_INET6 10
+#define IPPROTO_ICMPV6 58
+
+#define OK 1
+#define NOK 0
+#define ALLOW_PKT 1
+#define ALLOW_SK 1
+
+#define TASK_COMM_LEN 16
+#define MAX_ENTRIES 4096

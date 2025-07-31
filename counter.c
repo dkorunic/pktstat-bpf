@@ -28,25 +28,7 @@
 #include <bpf/bpf_helpers.h>
 #include <bpf/bpf_tracing.h>
 
-#define MAX_ENTRIES 4096
-
-#define s6_addr in6_u.u6_addr8
-#define s6_addr16 in6_u.u6_addr16
-#define s6_addr32 in6_u.u6_addr32
-#define inet_num sk.__sk_common.skc_num
-
-#define ETH_P_IP 0x0800
-#define ETH_P_IPV6 0x86DD
-#define TC_ACT_UNSPEC -1
-#define AF_INET 2
-#define AF_INET6 10
-#define TASK_COMM_LEN 16
-#define IPPROTO_ICMPV6 58
-
-#define OK 1
-#define NOK 0
-#define ALLOW_PKT 1
-#define ALLOW_SK 1
+#include "counter.h"
 
 // Map key struct for IP traffic
 typedef struct statkey_t {
@@ -80,7 +62,7 @@ typedef struct sockinfo_t {
 } sockinfo;
 
 struct {
-  __uint(type, BPF_MAP_TYPE_LRU_HASH);
+  __uint(type, BPF_MAP_TYPE_LRU_HASH); // LRU hash requires 4.10 kernel
   __uint(max_entries, MAX_ENTRIES);
   __type(key, __u64);
   __type(value, sockinfo);
@@ -100,7 +82,8 @@ static const __u8 ip4in6[] = {0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0xff, 0xff};
  *
  * @throws none
  */
-static inline int process_ip4(struct iphdr *ip4, void *data_end, statkey *key) {
+static inline __attribute__((always_inline)) int
+process_ip4(struct iphdr *ip4, void *data_end, statkey *key) {
   // validate IPv4 size
   if ((void *)ip4 + sizeof(*ip4) > data_end) {
     return NOK;
@@ -176,8 +159,8 @@ static inline int process_ip4(struct iphdr *ip4, void *data_end, statkey *key) {
  *
  * @throws none
  */
-static inline int process_ip6(struct ipv6hdr *ip6, void *data_end,
-                              statkey *key) {
+static inline __attribute__((always_inline)) int
+process_ip6(struct ipv6hdr *ip6, void *data_end, statkey *key) {
   // validate IPv6 size
   if ((void *)ip6 + sizeof(*ip6) > data_end) {
     return NOK;
@@ -247,7 +230,8 @@ static inline int process_ip6(struct ipv6hdr *ip6, void *data_end,
  *
  * @throws none
  */
-static inline void process_eth(void *data, void *data_end, __u64 pkt_len) {
+static inline __attribute__((always_inline)) void
+process_eth(void *data, void *data_end, __u64 pkt_len) {
   struct ethhdr *eth = data;
 
   // validate Ethernet size
@@ -314,7 +298,8 @@ static inline void process_eth(void *data, void *data_end, __u64 pkt_len) {
  * byte count if the key is found. If the key is not found, it creates a new
  * entry with the packet count and byte count set to 1.
  */
-static inline void process_cgroup_skb(struct __sk_buff *skb) {
+static inline __attribute__((always_inline)) void
+process_cgroup_skb(struct __sk_buff *skb) {
   void *data = (void *)(long)skb->data;
   void *data_end = (void *)(long)skb->data_end;
   __u64 pkt_len = skb->len;
@@ -375,7 +360,8 @@ static inline void process_cgroup_skb(struct __sk_buff *skb) {
  *
  * @throws none
  */
-static inline void tc_process_packet(struct __sk_buff *skb) {
+static inline __attribute__((always_inline)) void
+tc_process_packet(struct __sk_buff *skb) {
   void *data = (void *)(long)skb->data;
   void *data_end = (void *)(long)skb->data_end;
 
@@ -391,7 +377,8 @@ static inline void tc_process_packet(struct __sk_buff *skb) {
  *
  * @throws none
  */
-static inline void xdp_process_packet(struct xdp_md *xdp) {
+static inline __attribute__((always_inline)) void
+xdp_process_packet(struct xdp_md *xdp) {
   void *data = (void *)(long)xdp->data;
   void *data_end = (void *)(long)xdp->data_end;
 
@@ -524,8 +511,8 @@ int cgroup_skb_egress(struct __sk_buff *skb) {
  *
  * @throws none
  */
-static inline void process_tcp(bool receive, struct sock *sk, statkey *key,
-                               pid_t pid) {
+static inline __attribute__((always_inline)) void
+process_tcp(bool receive, struct sock *sk, statkey *key, pid_t pid) {
   __u16 family = BPF_CORE_READ(sk, __sk_common.skc_family);
 
   switch (family) {
@@ -592,8 +579,8 @@ static inline void process_tcp(bool receive, struct sock *sk, statkey *key,
  *
  * @throws none
  */
-static inline void process_udp_recv(bool receive, struct sk_buff *skb,
-                                    statkey *key, pid_t pid) {
+static inline __attribute__((always_inline)) void
+process_udp_recv(bool receive, struct sk_buff *skb, statkey *key, pid_t pid) {
   struct udphdr *udphdr =
       (struct udphdr *)(BPF_CORE_READ(skb, head) +
                         BPF_CORE_READ(skb, transport_header));
@@ -651,8 +638,8 @@ static inline void process_udp_recv(bool receive, struct sk_buff *skb,
  *
  * @throws none
  */
-static inline size_t process_icmp4(struct sk_buff *skb, statkey *key,
-                                   pid_t pid) {
+static inline __attribute__((always_inline)) size_t
+process_icmp4(struct sk_buff *skb, statkey *key, pid_t pid) {
   struct icmphdr *icmphdr =
       (struct icmphdr *)(BPF_CORE_READ(skb, head) +
                          BPF_CORE_READ(skb, transport_header));
@@ -700,8 +687,8 @@ static inline size_t process_icmp4(struct sk_buff *skb, statkey *key,
  * @throws none
  */
 
-static inline size_t process_icmp6(struct sk_buff *skb, statkey *key,
-                                   pid_t pid) {
+static inline __attribute__((always_inline)) size_t
+process_icmp6(struct sk_buff *skb, statkey *key, pid_t pid) {
   struct icmp6hdr *icmphdr =
       (struct icmp6hdr *)(BPF_CORE_READ(skb, head) +
                           BPF_CORE_READ(skb, transport_header));
@@ -742,8 +729,8 @@ static inline size_t process_icmp6(struct sk_buff *skb, statkey *key,
  *
  * @throws none
  */
-static inline size_t process_udp_send(struct sk_buff *skb, statkey *key,
-                                      pid_t pid) {
+static inline __attribute__((always_inline)) size_t
+process_udp_send(struct sk_buff *skb, statkey *key, pid_t pid) {
   struct udphdr *udphdr =
       (struct udphdr *)(BPF_CORE_READ(skb, head) +
                         BPF_CORE_READ(skb, transport_header));
@@ -771,7 +758,7 @@ static inline size_t process_udp_send(struct sk_buff *skb, statkey *key,
  * @throws none
  */
 
-static inline void process_raw_sendmsg4(struct sock *sk, struct msghdr *msg,
+static inline __attribute__((always_inline)) void process_raw_sendmsg4(struct sock *sk, struct msghdr *msg,
                                         statkey *key, pid_t pid) {
   struct inet_sock *isk = (struct inet_sock *)sk;
   struct sockaddr_in *sin = (struct sockaddr_in *)BPF_CORE_READ(msg, msg_name);
@@ -822,7 +809,7 @@ static inline void process_raw_sendmsg4(struct sock *sk, struct msghdr *msg,
  * @throws none
  */
 
-static inline void process_raw_sendmsg6(struct sock *sk, struct msghdr *msg,
+static inline __attribute__((always_inline)) void process_raw_sendmsg6(struct sock *sk, struct msghdr *msg,
                                         statkey *key, pid_t pid) {
   struct inet_sock *isk = (struct inet_sock *)sk;
   struct sockaddr_in6 *sin =
@@ -862,7 +849,8 @@ static inline void process_raw_sendmsg6(struct sock *sk, struct msghdr *msg,
  *
  * @throws none
  */
-static inline void update_val(statkey *key, size_t size) {
+static inline __attribute__((always_inline)) void update_val(statkey *key,
+                                                             size_t size) {
   // lookup value in hash
   statvalue *val = (statvalue *)bpf_map_lookup_elem(&pkt_count, key);
   if (val) {
