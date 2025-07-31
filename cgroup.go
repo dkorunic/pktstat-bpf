@@ -188,6 +188,7 @@ func cGroupWatcher(objs cgroupObjects) (*perf.Reader, error) {
 
 	go func() {
 		var event cgroupCgroupevent
+
 		var r perf.Record
 
 		for {
