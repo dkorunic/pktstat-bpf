@@ -47,6 +47,11 @@ tasks:
       - gofumpt -l -w .
       - betteralign -apply ./...
 
+  fmt-bpf:
+    cmds:
+      - clang-format -i ./bpf/*
+      - gsed -i 's,[[:space:]]*go:build,go:build,g' ./bpf/*
+
   modernize:
     cmds:
       - go run golang.org/x/tools/gopls/internal/analysis/modernize/cmd/modernize@latest -fix -test ./...
