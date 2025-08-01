@@ -59,6 +59,8 @@ struct {
  * @cgrp: the struct cgroup to read the cgroup ID from
  *
  * Returns: the cgroup ID as an unsigned 64-bit integer
+ *
+ * get_cgroupid() comes from aquasecurity/tracee, license: Apache-2.0
  */
 static inline __attribute__((always_inline)) __u64
 get_cgroupid(struct cgroup *cgrp) {
