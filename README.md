@@ -48,16 +48,16 @@ In case of XDP, not all NIC drivers support **Native XDP** (XDP program is loade
 
 The following table maps features, requirements and expected performance for described modes:
 
-| Capture type                                        | Ingress | Egress | Performance    | Process tracking | Kernel required | SmartNIC required |
-| --------------------------------------------------- | ------- | ------ | -------------- | ---------------- | --------------- | ----------------- |
-| Generic [PCAP](https://github.com/dkorunic/pktstat) | Yes     | Yes    | Low            | No               | Any             | No                |
-| [AF_PACKET](https://github.com/dkorunic/pktstat)    | Yes     | Yes    | Medium         | No               | v2.2            | No                |
-| KProbes                                             | Yes     | Yes    | Medium+        | **Yes**          | v4.1            | No                |
-| CGroup (SKB)                                        | Yes     | Yes    | Medium+        | Partial          | v4.10           | No                |
-| TC (SchedACT)                                       | Yes     | Yes    | **High**       | No               | v6.6            | No                |
-| XDP Generic                                         | Yes     | **No** | **High**       | No               | v5.9            | No                |
-| XDP Native                                          | Yes     | **No** | **Very high**  | No               | v5.9            | No                |
-| XDP Offloaded                                       | Yes     | **No** | **Wire speed** | No               | v5.9            | **Yes**           |
+| Capture type                                        | Ingress | Egress | Performance    | Process tracking                           | Kernel required | SmartNIC required |
+| --------------------------------------------------- | ------- | ------ | -------------- | ------------------------------------------ | --------------- | ----------------- |
+| Generic [PCAP](https://github.com/dkorunic/pktstat) | Yes     | Yes    | Low            | No                                         | Any             | No                |
+| [AF_PACKET](https://github.com/dkorunic/pktstat)    | Yes     | Yes    | Medium         | No                                         | v2.2            | No                |
+| KProbes                                             | Yes     | Yes    | Medium+        | **Yes** (command, process ID, CGroup path) | v4.10           | No                |
+| CGroup (SKB)                                        | Yes     | Yes    | Medium+        | Partial (command, process ID)              | v4.10           | No                |
+| TC (SchedACT)                                       | Yes     | Yes    | **High**       | No                                         | v6.6            | No                |
+| XDP Generic                                         | Yes     | **No** | **High**       | No                                         | v5.9            | No                |
+| XDP Native                                          | Yes     | **No** | **Very high**  | No                                         | v5.9            | No                |
+| XDP Offloaded                                       | Yes     | **No** | **Wire speed** | No                                         | v5.9            | **Yes**           |
 
 A list of XDP compatible drivers follows (and it is not necessarily up-to-date):
 
@@ -98,7 +98,7 @@ Additionally it is possible to change XDP attach mode with `--xdp_mode` from `au
 
 With `--kprobes` program will switch to Kprobe mode and track TCP and UDP traffic per process. Performance will be even more degraded compared to TC and XDP mode, but all per-process traffic will be visible, inside of all Cgroups, containers, K8s pods etc. Additional details such as process command name, process ID and Control Group will be shown as well.
 
-With `--cgroup` parameter with path to the CGroup it is possible to measure ingress and egress traffic for a specific Control Group. Additional details such as process command name and process ID will be shown.
+With `--cgroup` parameter with path to the CGroup it is possible to measure ingress and egress traffic for a specific Control Group. Additional details such as process command name and process ID will be shown if available.
 
 ## Star History
 
