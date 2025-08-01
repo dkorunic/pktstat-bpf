@@ -69,7 +69,8 @@ get_cgroupid(struct cgroup *cgrp) {
   if (kn == NULL)
     return 0;
 
-  __u64 id;
+  __u64 id; // was union kernfs_node_id before 5.5, can read it as u64 in both
+            // situations
 
   if (bpf_core_type_exists(union kernfs_node_id)) {
     struct kernfs_node___older_v55 *kn_old = (void *)kn;
@@ -83,7 +84,7 @@ get_cgroupid(struct cgroup *cgrp) {
       bpf_core_read(&id, sizeof(__u64), &kn_rh8->id);
       id = id & 0xffffffff; // XXX: u32 is required
     } else {
-      // all other regular kernels bellow v5.5
+      // all other regular kernels below v5.5
       bpf_core_read(&id, sizeof(__u64), &kn_old->id);
       id = id & 0xffffffff; // XXX: u32 is required
     }
