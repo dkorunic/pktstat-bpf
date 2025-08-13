@@ -40,11 +40,18 @@ const (
 	Tbps         = 1000 * Gbps
 )
 
-// processMap generates statEntry objects from an ebpf.Map using the provided start time.
+// processMap processes a given ebpf.Map object by iterating over all its entries,
+// converting the counter values into a statEntry slice, and sorting the slice
+// using the given sortFunc.
 //
 // Parameters:
+//   - m *ebpf.Map: the eBPF map to process
+//   - start time.Time: the start time for calculating entry duration
+//   - sortFunc func([]statEntry): a function to sort the statEntry slice
 //
-//	m *ebpf.Map - the eb
+// Returns:
+//   - []statEntry: the sorted statEntry slice
+//   - error: an error if any occurred during map iteration, otherwise nil
 func processMap(m *ebpf.Map, start time.Time, sortFunc func([]statEntry)) ([]statEntry, error) {
 	stats, err := listMap(m, start)
 	sortFunc(stats)
@@ -192,12 +199,16 @@ func outputJSON(m []statEntry) string {
 	return string(out)
 }
 
-// bsliceToString converts a byte slice to a string, trimming any null bytes.
+// bsliceToString converts a slice of int8 values to a string by first
+// transforming each int8 element to a byte. It then trims any NULL
+// characters from the resulting byte slice before converting it to
+// a string.
 //
-// It takes a byte slice as its parameter and returns a string.
-// If the byte slice is empty, the function returns the string "kernel".
-// Otherwise, it creates a new byte slice, copies the input byte slice into it,
-// trims any null bytes from the end of the slice, and returns the result as a string.
+// Parameters:
+//   - bs []int8: The slice of int8 values to be converted.
+//
+// Returns:
+//   - string: The resulting string after conversion and trimming.
 func bsliceToString(bs []int8) string {
 	b := make([]byte, len(bs))
 	for i, v := range bs {
