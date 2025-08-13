@@ -28,7 +28,6 @@ import (
 	"strings"
 	"time"
 
-	"github.com/avast/retry-go/v4"
 	"github.com/cilium/ebpf"
 	"github.com/goccy/go-json"
 )
@@ -39,8 +38,6 @@ const (
 	Mbps         = 1000 * Kbps
 	Gbps         = 1000 * Mbps
 	Tbps         = 1000 * Gbps
-
-	mapReadRetries = 3
 )
 
 // processMap generates statEntry objects from an ebpf.Map using the provided start time.
@@ -49,48 +46,10 @@ const (
 //
 //	m *ebpf.Map - the eb
 func processMap(m *ebpf.Map, start time.Time, sortFunc func([]statEntry)) ([]statEntry, error) {
-	var (
-		key counterStatkey
-		val counterStatvalue
-	)
-
-	dur := time.Since(start).Seconds()
-	stats := make([]statEntry, 0, m.MaxEntries())
-
-	err := retry.Do(func() error {
-		// reset to zero length
-		stats = stats[:0]
-
-		iter := m.Iterate()
-
-		// build statEntry slice converting data where needed
-		for iter.Next(&key, &val) {
-			stats = append(stats, statEntry{
-				SrcIP:   bytesToAddr(key.Srcip.In6U.U6Addr8),
-				DstIP:   bytesToAddr(key.Dstip.In6U.U6Addr8),
-				Proto:   protoToString(key.Proto),
-				SrcPort: key.SrcPort,
-				DstPort: key.DstPort,
-				Bytes:   val.Bytes,
-				Packets: val.Packets,
-				Bitrate: 8 * float64(val.Bytes) / dur,
-				Pid:     key.Pid,
-				Comm:    bsliceToString(key.Comm[:]),
-				CGroup:  cGroupToPath(key.Cgroupid),
-			})
-		}
-
-		return iter.Err()
-	},
-		retry.Attempts(mapReadRetries),
-	)
-	if err != nil {
-		return nil, err
-	}
-
+	stats, err := listMap(m, start)
 	sortFunc(stats)
 
-	return stats, nil
+	return stats, err
 }
 
 // bitrateSort sorts a slice of statEntry objects by their Bitrate field in descending order.

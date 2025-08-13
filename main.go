@@ -23,6 +23,7 @@ package main
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log"
 	"net"
@@ -31,6 +32,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/cilium/ebpf"
 	"github.com/cilium/ebpf/link"
 	"github.com/cilium/ebpf/rlimit"
 	"github.com/hako/durafmt"
@@ -162,7 +164,12 @@ func main() {
 
 		m, err = processMap(objsCounter.PktCount, startTime, bitrateSort)
 		if err != nil {
-			log.Fatalf("Error reading eBPF map: %v", err)
+			// reads from BPF_MAP_TYPE_LRU_HASH maps might get interrupted
+			if errors.Is(err, ebpf.ErrIterationAborted) {
+				_, _ = fmt.Fprint(os.Stderr, "Iteration aborted while reading eBPF map, output may be incomplete\n")
+			} else {
+				log.Fatalf("Error reading eBPF map: %v", err)
+			}
 		}
 
 		if *jsonOutput {
