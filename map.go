@@ -37,7 +37,7 @@ var (
 // checkBatchMapSupport checks whether the given ebpf.Map supports batch lookups.
 //
 // A batch lookup is supported if the map supports the BPF_MAP_LOOKUP_BATCH
-// flag. This flag is only supported on Linux 5.7 and above.
+// flag. This flag is only supported on Linux v5.6 and above.
 //
 // The function performs a batch lookup on the map with a single dummy key and
 // value to test whether the operation is supported. If the map does not

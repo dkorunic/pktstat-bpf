@@ -39,4 +39,4 @@
 #define ALLOW_SK 1
 
 #define TASK_COMM_LEN 16
-#define MAX_ENTRIES 4096
+#define MAX_ENTRIES 131072
