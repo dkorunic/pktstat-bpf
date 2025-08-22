@@ -86,7 +86,7 @@ sudo apt install linux-headers-$(uname -r) \
 Build the test release of `pktstat-bpf`:
 
 ```shell
-make build
+make generate build
 ```
 
 Move the release into the `network-report-collector-path` set in
