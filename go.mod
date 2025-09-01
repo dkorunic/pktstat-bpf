@@ -4,11 +4,11 @@ go 1.25
 
 require (
 	github.com/cilium/ebpf v0.19.0
-	github.com/gdamore/tcell/v2 v2.8.1
+	github.com/gdamore/tcell/v2 v2.9.0
 	github.com/goccy/go-json v0.10.5
 	github.com/hako/durafmt v0.0.0-20210608085754-5c1018a4e16b
 	github.com/peterbourgon/ff/v4 v4.0.0-beta.1
-	github.com/rivo/tview v0.0.0-20250625164341-a4a78f1e05cb
+	github.com/rivo/tview v0.42.0
 )
 
 require (
