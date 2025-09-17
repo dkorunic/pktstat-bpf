@@ -23,13 +23,13 @@ package main
 
 import (
 	"bytes"
+	"encoding/json"
 	"fmt"
 	"sort"
 	"strings"
 	"time"
 
 	"github.com/cilium/ebpf"
-	"github.com/goccy/go-json"
 )
 
 const (
