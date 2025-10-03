@@ -67,9 +67,15 @@ func main() {
 		log.Fatalf("Error removing memlock: %v", err)
 	}
 
-	// Initialize Kubernetes client if kubeconfig is provided
+	// Create context for the application
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	// Initialize Kubernetes client
 	if kubeconfig != nil && *kubeconfig != "" {
-		if err := initKubernetesClient(); err != nil {
+		// Explicit kubeconfig provided - use it directly
+		log.Printf("Using explicit kubeconfig: %s", *kubeconfig)
+		if err := initKubernetesClient(*kubeconfig); err != nil {
 			log.Fatalf("Error initializing Kubernetes client: %v", err)
 		}
 
@@ -78,6 +84,38 @@ func main() {
 
 		// Detect DNS services in the cluster
 		detectDNSServices()
+	} else {
+		// No explicit kubeconfig - start auto-discovery
+		log.Printf("No kubeconfig specified, starting auto-discovery")
+		discovery := NewConfigDiscovery()
+
+		// Subscribe to config changes
+		discovery.Subscribe(func(configPath string) {
+			if configPath == "" {
+				log.Printf("Kubeconfig removed, Kubernetes features disabled")
+				if err := initKubernetesClient(""); err != nil {
+					log.Printf("Error disabling Kubernetes client: %v", err)
+				}
+				return
+			}
+
+			log.Printf("Kubeconfig discovered/changed: %s", configPath)
+			if err := initKubernetesClient(configPath); err != nil {
+				log.Printf("Error initializing Kubernetes client with %s: %v", configPath, err)
+			} else {
+				// Detect DNS services when client is initialized
+				detectDNSServices()
+			}
+		})
+
+		// Start discovery in background
+		if err := discovery.Start(ctx); err != nil {
+			log.Printf("Failed to start config discovery: %v", err)
+			log.Printf("Kubernetes features will be disabled")
+		} else {
+			// Start cache cleanup goroutine (runs even before client is available)
+			go cleanupIPToPodCache()
+		}
 	}
 
 	// Load the compiled eBPF ELF and load it into the kernel
@@ -135,9 +173,6 @@ func main() {
 	if !libcExists {
 		log.Fatalf("Error: Could not find libc.so.6 in any standard locations, cannot attach uprobes")
 	}
-
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
 
 	upHooks := []uprobeHook{
 		{

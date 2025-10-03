@@ -39,8 +39,8 @@ func parseFlags() {
 
 	help = fs.Bool('?', "help", "display help")
 	uniqueOutput = fs.Bool('u', "unique", "if true, only show the first instance of each connection")
-	kubeconfig = fs.StringLong("kubeconfig", "", "path to kubeconfig file (Kubernetes lookups enabled if provided)")
-	externalOnly = fs.BoolLong("external", "if true, only show traffic to external destinations")
+	kubeconfig = fs.StringLong("kubeconfig", "", "path to kubeconfig file (if not set, dynamic kubeconfig discovery is used)")
+	externalOnly = fs.Bool('e', "external", "if true, only show traffic to external destinations")
 	version = fs.BoolLong("version", "display program version")
 
 	var err error

@@ -38,6 +38,9 @@ var (
 	// kubeClient is the Kubernetes client used for pod lookups
 	kubeClient *kubernetes.Clientset
 
+	// clientMutex protects kubeClient access for thread safety
+	clientMutex sync.RWMutex
+
 	// ipToPodCache is a cache of IP address to pod name mappings
 	ipToPodCache = make(map[string]string)
 
@@ -54,18 +57,39 @@ type ipPodCacheEntry struct {
 	timestamp time.Time
 }
 
-// initKubernetesClient initializes the Kubernetes client if enabled
-func initKubernetesClient() error {
-	// Don't initialize if kubeconfig is empty
-	if kubeconfig == nil || *kubeconfig == "" {
+// getKubeClient returns the current Kubernetes client with mutex protection
+// Returns nil if the client is not initialized
+func getKubeClient() *kubernetes.Clientset {
+	clientMutex.RLock()
+	defer clientMutex.RUnlock()
+	return kubeClient
+}
+
+// initKubernetesClient initializes the Kubernetes client with the provided config path
+func initKubernetesClient(configPath string) error {
+	clientMutex.Lock()
+	defer clientMutex.Unlock()
+
+	// Don't initialize if configPath is empty
+	if configPath == "" {
+		log.Printf("No kubeconfig path provided, Kubernetes features disabled")
+		kubeClient = nil
 		return nil
 	}
 
 	var config *rest.Config
 	var err error
 
+	// Close existing client if present (graceful shutdown)
+	if kubeClient != nil {
+		log.Printf("Reinitializing Kubernetes client")
+		// The kubernetes.Clientset doesn't have an explicit Close method,
+		// but we can nil it out to allow garbage collection
+		kubeClient = nil
+	}
+
 	// Out-of-cluster configuration
-	config, err = clientcmd.BuildConfigFromFlags("", *kubeconfig)
+	config, err = clientcmd.BuildConfigFromFlags("", configPath)
 	if err != nil {
 		return err
 	}
@@ -76,15 +100,16 @@ func initKubernetesClient() error {
 		return err
 	}
 
-	log.Printf("Kubernetes client initialized with kubeconfig: %s", *kubeconfig)
+	log.Printf("Kubernetes client initialized with kubeconfig: %s", configPath)
 	return nil
 }
 
 // lookupPodForIP looks up the pod name for a given IP address
 // It caches results to avoid excessive API calls
 func lookupPodForIP(ip netip.Addr) string {
-	// Skip lookup if kubeconfig is empty or client not initialized
-	if kubeconfig == nil || *kubeconfig == "" || kubeClient == nil {
+	// Get the current client safely
+	client := getKubeClient()
+	if client == nil {
 		return ""
 	}
 
@@ -103,7 +128,7 @@ func lookupPodForIP(ip netip.Addr) string {
 	defer cancel()
 
 	// List all pods across all namespaces to find matching IP
-	pods, err := kubeClient.CoreV1().Pods("").List(ctx, metav1.ListOptions{
+	pods, err := client.CoreV1().Pods("").List(ctx, metav1.ListOptions{
 		FieldSelector: "status.podIP=" + ipStr,
 	})
 	if err != nil {
@@ -129,8 +154,8 @@ func cleanupIPToPodCache() {
 	for {
 		time.Sleep(cacheExpiry)
 
-		// Skip cleanup if kubeconfig is empty or client not initialized
-		if kubeconfig == nil || *kubeconfig == "" || kubeClient == nil {
+		// Skip cleanup if client not initialized
+		if getKubeClient() == nil {
 			continue
 		}
 

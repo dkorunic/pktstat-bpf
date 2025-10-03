@@ -23,15 +23,19 @@ var (
 
 // detectDNSServices tries to identify DNS services in the Kubernetes cluster
 func detectDNSServices() {
-	// If we have Kubernetes client initialized, we can try to detect DNS services
-	if kubeClient != nil {
-		ips, err := getDNSServiceIPs()
-		if err != nil {
-			log.Printf("Error detecting DNS services: %v", err)
-		} else if len(ips) > 0 {
-			dnsServiceIPs = ips
-			log.Printf("Detected DNS service IPs: %v", dnsServiceIPs)
-		}
+	// Get the current client safely
+	client := getKubeClient()
+	if client == nil {
+		log.Printf("Kubernetes client not available, skipping DNS service detection")
+		return
+	}
+
+	ips, err := getDNSServiceIPs()
+	if err != nil {
+		log.Printf("Error detecting DNS services: %v", err)
+	} else if len(ips) > 0 {
+		dnsServiceIPs = ips
+		log.Printf("Detected DNS service IPs: %v", dnsServiceIPs)
 	}
 
 	if len(dnsServiceIPs) == 0 {
@@ -41,14 +45,15 @@ func detectDNSServices() {
 
 // getDNSServiceIPs returns IPs of services listening on UDP port 53
 func getDNSServiceIPs() ([]string, error) {
-	if kubeClient == nil {
+	client := getKubeClient()
+	if client == nil {
 		return nil, fmt.Errorf("Kubernetes client not initialized")
 	}
 
 	var ips []string
 
 	// Query services in all namespaces
-	services, err := kubeClient.CoreV1().Services("").List(context.Background(), metav1.ListOptions{})
+	services, err := client.CoreV1().Services("").List(context.Background(), metav1.ListOptions{})
 	if err != nil {
 		return nil, fmt.Errorf("failed to list services: %v", err)
 	}

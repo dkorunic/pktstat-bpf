@@ -53,12 +53,12 @@ func processMap(m *ebpf.Map, sortFunc func([]statEntry)) ([]statEntry, error) {
 		srcIP := bytesToAddr(key.Srcip.In6U.U6Addr8)
 		dstIP := bytesToAddr(key.Dstip.In6U.U6Addr8)
 
-		// Filter out traffic with IPv6 unspecified addresses, this is to
+		// Filter out traffic with unspecified addresses, this is to
 		// prevent users from seeing traffic to/from a cluster-provisioner
-		// host.
+		// host or invalid/unconnected socket states.
 		srcIPStr := srcIP.String()
 		dstIPStr := dstIP.String()
-		if srcIPStr == "::" && dstIPStr == "::" {
+		if (srcIPStr == "::" && dstIPStr == "::") || (srcIPStr == "0.0.0.0" && dstIPStr == "0.0.0.0") {
 			continue
 		}
 
@@ -99,8 +99,8 @@ func processMap(m *ebpf.Map, sortFunc func([]statEntry)) ([]statEntry, error) {
 			entry.LikelyService = portToLikelyServiceName(key.DstPort)
 		}
 
-		// Look up pod names if Kubernetes support is enabled
-		if kubeconfig != nil && *kubeconfig != "" && kubeClient != nil {
+		// Look up pod names if Kubernetes client is available
+		if getKubeClient() != nil {
 			entry.SourcePod = lookupPodForIP(srcIP)
 			entry.DstPod = lookupPodForIP(dstIP)
 		}

@@ -45,8 +45,8 @@ FLAGS
   -?, --help                    display help
   -p, --plain                   if true, output in plain text format (default: JSON format)
   -u, --unique                  if true, only show the first instance of each connection
-  --kubeconfig STRING           path to kubeconfig file (Kubernetes lookups enabled if provided)
-  --external                    if true, only show traffic to external destinations
+  --kubeconfig STRING           path to kubeconfig file (Kubernetes lookups enabled if provided; if not set, kubeconfig auto-discovery is used by default)
+  -e, --external                    if true, only show traffic to external destinations
   --internal-networks STRING    comma-separated list of internal network CIDRs to filter out when using --external
                                 (default: 127.0.0.0/8,10.0.0.0/8,172.16.0.0/12,192.168.0.0/16)
   --version                     display program version
@@ -82,14 +82,4 @@ sudo apt install linux-headers-$(uname -r) \
                  linux-tools-generic
 ```
 
-### Testing a Release with Cluster Provisioner
-Build the test release of `pktstat-bpf`:
 
-```shell
-make generate build
-```
-
-Move the release into the `network-report-collector-path` set in
-`/etc/cluster-provisioner/cluster-provisioner.yaml` (default: `/opt/cluster-provisioner/bin/pktstat-bpf`) and spin up a cluster
-or VM.  Cluster Provisioner will use the binary at that path to collect
-network reports.
