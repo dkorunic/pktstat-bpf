@@ -12,22 +12,6 @@ import (
 	"github.com/cilium/ebpf"
 )
 
-type counterAddrinfoArgsCache struct {
-	AddrinfoPtr uint64
-	Node        [256]int8
-	Pid         int32
-	Comm        [16]int8
-	_           [4]byte
-}
-
-type counterDnsLookupEvent struct {
-	AddrType uint32
-	Ip       [16]uint8
-	Host     [252]int8
-	Pid      int32
-	Comm     [16]int8
-}
-
 type counterSockinfo struct {
 	Comm [16]uint8
 	Pid  int32
@@ -47,6 +31,11 @@ type counterStatkey struct {
 type counterStatvalue struct {
 	Packets uint64
 	Bytes   uint64
+}
+
+type counterUdpPkt struct {
+	Pid int32
+	Pkt [4096]uint8
 }
 
 // loadCounter returns the embedded CollectionSpec for counter.
@@ -91,36 +80,31 @@ type counterSpecs struct {
 //
 // It can be passed ebpf.CollectionSpec.Assign.
 type counterProgramSpecs struct {
-	IcmpSend             *ebpf.ProgramSpec `ebpf:"__icmp_send"`
-	CgroupSkbEgress      *ebpf.ProgramSpec `ebpf:"cgroup_skb_egress"`
-	CgroupSkbIngress     *ebpf.ProgramSpec `ebpf:"cgroup_skb_ingress"`
-	CgroupSockCreate     *ebpf.ProgramSpec `ebpf:"cgroup_sock_create"`
-	Icmp6Send            *ebpf.ProgramSpec `ebpf:"icmp6_send"`
-	IcmpRcv              *ebpf.ProgramSpec `ebpf:"icmp_rcv"`
-	Icmpv6Rcv            *ebpf.ProgramSpec `ebpf:"icmpv6_rcv"`
-	IpLocalOutFn         *ebpf.ProgramSpec `ebpf:"ip_local_out_fn"`
-	IpOutputFn           *ebpf.ProgramSpec `ebpf:"ip_output_fn"`
-	IpSendSkb            *ebpf.ProgramSpec `ebpf:"ip_send_skb"`
-	SkbConsumeUdp        *ebpf.ProgramSpec `ebpf:"skb_consume_udp"`
-	TcCountPackets       *ebpf.ProgramSpec `ebpf:"tc_count_packets"`
-	TcpCleanupRbuf       *ebpf.ProgramSpec `ebpf:"tcp_cleanup_rbuf"`
-	TcpSendmsg           *ebpf.ProgramSpec `ebpf:"tcp_sendmsg"`
-	UprobeGetaddrinfo    *ebpf.ProgramSpec `ebpf:"uprobe__getaddrinfo"`
-	UprobeGethostbyname  *ebpf.ProgramSpec `ebpf:"uprobe__gethostbyname"`
-	UprobeGethostbyname2 *ebpf.ProgramSpec `ebpf:"uprobe__gethostbyname2"`
-	UprobeGethostbynameR *ebpf.ProgramSpec `ebpf:"uprobe__gethostbyname_r"`
-	XdpCountPackets      *ebpf.ProgramSpec `ebpf:"xdp_count_packets"`
+	IcmpSend         *ebpf.ProgramSpec `ebpf:"__icmp_send"`
+	CgroupSkbEgress  *ebpf.ProgramSpec `ebpf:"cgroup_skb_egress"`
+	CgroupSkbIngress *ebpf.ProgramSpec `ebpf:"cgroup_skb_ingress"`
+	CgroupSockCreate *ebpf.ProgramSpec `ebpf:"cgroup_sock_create"`
+	Icmp6Send        *ebpf.ProgramSpec `ebpf:"icmp6_send"`
+	IcmpRcv          *ebpf.ProgramSpec `ebpf:"icmp_rcv"`
+	Icmpv6Rcv        *ebpf.ProgramSpec `ebpf:"icmpv6_rcv"`
+	IpLocalOutFn     *ebpf.ProgramSpec `ebpf:"ip_local_out_fn"`
+	IpOutputFn       *ebpf.ProgramSpec `ebpf:"ip_output_fn"`
+	IpSendSkb        *ebpf.ProgramSpec `ebpf:"ip_send_skb"`
+	SkbConsumeUdp    *ebpf.ProgramSpec `ebpf:"skb_consume_udp"`
+	TcCountPackets   *ebpf.ProgramSpec `ebpf:"tc_count_packets"`
+	TcpCleanupRbuf   *ebpf.ProgramSpec `ebpf:"tcp_cleanup_rbuf"`
+	TcpSendmsg       *ebpf.ProgramSpec `ebpf:"tcp_sendmsg"`
+	XdpCountPackets  *ebpf.ProgramSpec `ebpf:"xdp_count_packets"`
 }
 
 // counterMapSpecs contains maps before they are loaded into the kernel.
 //
 // It can be passed ebpf.CollectionSpec.Assign.
 type counterMapSpecs struct {
-	AddrinfoArgsHash *ebpf.MapSpec `ebpf:"addrinfo_args_hash"`
-	DnsEvents        *ebpf.MapSpec `ebpf:"dns_events"`
-	DnsLookupHeap    *ebpf.MapSpec `ebpf:"dns_lookup_heap"`
 	PktCount         *ebpf.MapSpec `ebpf:"pkt_count"`
 	SockInfo         *ebpf.MapSpec `ebpf:"sock_info"`
+	UdpPktLookupHeap *ebpf.MapSpec `ebpf:"udp_pkt_lookup_heap"`
+	UdpPkts          *ebpf.MapSpec `ebpf:"udp_pkts"`
 }
 
 // counterVariableSpecs contains global variables before they are loaded into the kernel.
@@ -149,20 +133,18 @@ func (o *counterObjects) Close() error {
 //
 // It can be passed to loadCounterObjects or ebpf.CollectionSpec.LoadAndAssign.
 type counterMaps struct {
-	AddrinfoArgsHash *ebpf.Map `ebpf:"addrinfo_args_hash"`
-	DnsEvents        *ebpf.Map `ebpf:"dns_events"`
-	DnsLookupHeap    *ebpf.Map `ebpf:"dns_lookup_heap"`
 	PktCount         *ebpf.Map `ebpf:"pkt_count"`
 	SockInfo         *ebpf.Map `ebpf:"sock_info"`
+	UdpPktLookupHeap *ebpf.Map `ebpf:"udp_pkt_lookup_heap"`
+	UdpPkts          *ebpf.Map `ebpf:"udp_pkts"`
 }
 
 func (m *counterMaps) Close() error {
 	return _CounterClose(
-		m.AddrinfoArgsHash,
-		m.DnsEvents,
-		m.DnsLookupHeap,
 		m.PktCount,
 		m.SockInfo,
+		m.UdpPktLookupHeap,
+		m.UdpPkts,
 	)
 }
 
@@ -176,25 +158,21 @@ type counterVariables struct {
 //
 // It can be passed to loadCounterObjects or ebpf.CollectionSpec.LoadAndAssign.
 type counterPrograms struct {
-	IcmpSend             *ebpf.Program `ebpf:"__icmp_send"`
-	CgroupSkbEgress      *ebpf.Program `ebpf:"cgroup_skb_egress"`
-	CgroupSkbIngress     *ebpf.Program `ebpf:"cgroup_skb_ingress"`
-	CgroupSockCreate     *ebpf.Program `ebpf:"cgroup_sock_create"`
-	Icmp6Send            *ebpf.Program `ebpf:"icmp6_send"`
-	IcmpRcv              *ebpf.Program `ebpf:"icmp_rcv"`
-	Icmpv6Rcv            *ebpf.Program `ebpf:"icmpv6_rcv"`
-	IpLocalOutFn         *ebpf.Program `ebpf:"ip_local_out_fn"`
-	IpOutputFn           *ebpf.Program `ebpf:"ip_output_fn"`
-	IpSendSkb            *ebpf.Program `ebpf:"ip_send_skb"`
-	SkbConsumeUdp        *ebpf.Program `ebpf:"skb_consume_udp"`
-	TcCountPackets       *ebpf.Program `ebpf:"tc_count_packets"`
-	TcpCleanupRbuf       *ebpf.Program `ebpf:"tcp_cleanup_rbuf"`
-	TcpSendmsg           *ebpf.Program `ebpf:"tcp_sendmsg"`
-	UprobeGetaddrinfo    *ebpf.Program `ebpf:"uprobe__getaddrinfo"`
-	UprobeGethostbyname  *ebpf.Program `ebpf:"uprobe__gethostbyname"`
-	UprobeGethostbyname2 *ebpf.Program `ebpf:"uprobe__gethostbyname2"`
-	UprobeGethostbynameR *ebpf.Program `ebpf:"uprobe__gethostbyname_r"`
-	XdpCountPackets      *ebpf.Program `ebpf:"xdp_count_packets"`
+	IcmpSend         *ebpf.Program `ebpf:"__icmp_send"`
+	CgroupSkbEgress  *ebpf.Program `ebpf:"cgroup_skb_egress"`
+	CgroupSkbIngress *ebpf.Program `ebpf:"cgroup_skb_ingress"`
+	CgroupSockCreate *ebpf.Program `ebpf:"cgroup_sock_create"`
+	Icmp6Send        *ebpf.Program `ebpf:"icmp6_send"`
+	IcmpRcv          *ebpf.Program `ebpf:"icmp_rcv"`
+	Icmpv6Rcv        *ebpf.Program `ebpf:"icmpv6_rcv"`
+	IpLocalOutFn     *ebpf.Program `ebpf:"ip_local_out_fn"`
+	IpOutputFn       *ebpf.Program `ebpf:"ip_output_fn"`
+	IpSendSkb        *ebpf.Program `ebpf:"ip_send_skb"`
+	SkbConsumeUdp    *ebpf.Program `ebpf:"skb_consume_udp"`
+	TcCountPackets   *ebpf.Program `ebpf:"tc_count_packets"`
+	TcpCleanupRbuf   *ebpf.Program `ebpf:"tcp_cleanup_rbuf"`
+	TcpSendmsg       *ebpf.Program `ebpf:"tcp_sendmsg"`
+	XdpCountPackets  *ebpf.Program `ebpf:"xdp_count_packets"`
 }
 
 func (p *counterPrograms) Close() error {
@@ -213,10 +191,6 @@ func (p *counterPrograms) Close() error {
 		p.TcCountPackets,
 		p.TcpCleanupRbuf,
 		p.TcpSendmsg,
-		p.UprobeGetaddrinfo,
-		p.UprobeGethostbyname,
-		p.UprobeGethostbyname2,
-		p.UprobeGethostbynameR,
 		p.XdpCountPackets,
 	)
 }

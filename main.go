@@ -48,15 +48,6 @@ import (
 var (
 	// Track DNS service IPs
 	dnsServiceIPs []string
-
-	// Maps to track DNS requests and their origins
-	dnsRequestOrigins = make(map[string]*dnsOrigin) // key: "srcIP:srcPort-dstIP:dstPort", value: origin info
-	dnsRequestsMutex  = &sync.RWMutex{}
-
-	// DNS hostnames to IP mappings
-	dnsHostToIP    = make(map[string][]dnsOriginMapping) // key: hostname, value: slice of IPs
-	dnsIPToHost    = make(map[string][]dnsOriginMapping) // key: IP string, value: slice of hostnames
-	dnsHostIPMutex = &sync.RWMutex{}
 )
 
 func main() {
@@ -148,71 +139,6 @@ func main() {
 	}
 
 	links = startKProbes(hooks, links)
-
-	// Set up uprobes for DNS tracking
-	// Try multiple potential libc locations
-	libcLocations := []string{
-		"/lib64/libc.so.6",                // Common on some systems
-		"/lib/x86_64-linux-gnu/libc.so.6", // Debian/Ubuntu
-		"/usr/lib/libc.so.6",              // Potential fallback
-		"/usr/lib64/libc.so.6",            // Another potential location
-	}
-
-	var libcLocation string
-	var libcExists bool
-
-	for _, loc := range libcLocations {
-		if _, err := os.Stat(loc); err == nil {
-			libcLocation = loc
-			libcExists = true
-			log.Printf("Found libc at: %s", libcLocation)
-			break
-		}
-	}
-
-	if !libcExists {
-		log.Fatalf("Error: Could not find libc.so.6 in any standard locations, cannot attach uprobes")
-	}
-
-	upHooks := []uprobeHook{
-		{
-			symbol: "getaddrinfo",
-			prog:   objs.UprobeGetaddrinfo,
-		},
-		{
-			symbol: "gethostbyname",
-			prog:   objs.UprobeGethostbyname2,
-		},
-		{
-			symbol: "gethostbyname2",
-			prog:   objs.UprobeGethostbyname2,
-		},
-		{
-			symbol: "gethostbyname_r",
-			prog:   objs.UprobeGethostbynameR,
-		},
-	}
-
-	// Open the executable once outside the loop
-	ex, err := link.OpenExecutable(libcLocation)
-	if err != nil {
-		log.Fatalf("Failed to open executable: %v", err)
-	}
-
-	for _, up := range upHooks {
-		log.Printf("Attaching UProbe: %s", up.symbol)
-
-		var l link.Link
-		l, err = ex.Uprobe(up.symbol, up.prog, nil)
-		if err != nil {
-			log.Fatalf("Failed to attach uprobe: %v", err)
-		}
-
-		defer l.Close()
-
-		links = append(links, l)
-	}
-
 	signalCh := make(chan os.Signal, 1)
 	signal.Notify(signalCh, os.Interrupt, syscall.SIGTERM, syscall.SIGINT)
 
@@ -231,14 +157,13 @@ func main() {
 	dnsLookupMap := make(map[uint32]string)
 	dnsLookupMapMutex := &sync.RWMutex{}
 
-	// Start a goroutine to process DNS events from the ringbuffer
-	dnsReader, err := ringbuf.NewReader(objs.DnsEvents)
+	udpPktReader, err := ringbuf.NewReader(objs.UdpPkts)
 	if err != nil {
-		log.Printf("Failed to create ringbuf reader for DNS events: %v", err)
+		log.Printf("Failed to create ringbuf reader for UDP packets: %v", err)
 	} else {
-		log.Printf("Created DNS events ringbuf reader successfully")
-		go processDNSEvents(ctx, dnsReader, dnsLookupMap, dnsLookupMapMutex)
-		defer dnsReader.Close()
+		log.Printf("Created UDP packet ringbuf reader successfully")
+		go processUDPPackets(ctx, udpPktReader, dnsLookupMap, dnsLookupMapMutex)
+		defer udpPktReader.Close()
 	}
 
 	// Run the main loop

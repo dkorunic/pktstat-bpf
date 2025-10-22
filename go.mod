@@ -8,6 +8,7 @@ require (
 	github.com/cilium/ebpf v0.18.0
 	github.com/fsnotify/fsnotify v1.9.0
 	github.com/goccy/go-json v0.10.5
+	github.com/google/gopacket v1.1.19
 	github.com/hashicorp/go-multierror v1.1.1
 	github.com/peterbourgon/ff/v4 v4.0.0-alpha.4
 	k8s.io/apimachinery v0.33.1
