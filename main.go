@@ -162,7 +162,7 @@ func main() {
 		log.Printf("Failed to create ringbuf reader for UDP packets: %v", err)
 	} else {
 		log.Printf("Created UDP packet ringbuf reader successfully")
-		go processUDPPackets(ctx, udpPktReader, dnsLookupMap, dnsLookupMapMutex)
+		go processUDPPackets(ctx, udpPktReader)
 		defer udpPktReader.Close()
 	}
 
@@ -181,15 +181,6 @@ func main() {
 			// Filter out entries we've already seen and enrich with DNS data
 			var newEntries []statEntry
 			for _, entry := range entries {
-				// Enrich entry with DNS hostname if available
-				if entry.Pid != 0 {
-					dnsLookupMapMutex.RLock()
-					if hostname, exists := dnsLookupMap[uint32(entry.Pid)]; exists {
-						entry.DNSQueryName = hostname
-					}
-					dnsLookupMapMutex.RUnlock()
-				}
-
 				// For --unique tracking (without timestamp)
 				uniqueKey := fmt.Sprintf("%s:%d->%s:%d:%s:%d:%s",
 					entry.SrcIP, entry.SrcPort, entry.DstIP, entry.DstPort,

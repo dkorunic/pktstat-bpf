@@ -92,7 +92,12 @@ struct {
 static const __u8 ip4in6[] = {0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0xff, 0xff};
 
 typedef struct udp_pkt_t {
+  struct in6_addr srcip;    // source IPv6 address
+  struct in6_addr dstip;    // destination IPv6 address
+  __u16 src_port;           // source port
+  __u16 dst_port;
   pid_t pid;
+  char comm[TASK_COMM_LEN];
   unsigned char pkt[MAX_PKT];
 } udp_pkt;
 
@@ -717,12 +722,17 @@ static inline void process_udp_recv(struct sk_buff *skb, statkey *key,
     }
 
     data->pid = pid;
+    data->src_port = key->src_port;
+    data->dst_port = key->dst_port;
     unsigned char *pktdata = BPF_CORE_READ(skb, data);
     size_t buflen = BPF_CORE_READ(skb, len);
     if (buflen > MAX_PKT) {
         buflen = MAX_PKT;
     }
 
+    __builtin_memcpy(&data->srcip, &key->srcip, sizeof(struct in6_addr));
+    __builtin_memcpy(&data->dstip, &key->dstip, sizeof(struct in6_addr));
+    __builtin_memcpy(&data->comm, &key->comm, sizeof(data->comm));
     bpf_core_read(&data->pkt, buflen, pktdata);
     bpf_ringbuf_submit(data, 0);
   }

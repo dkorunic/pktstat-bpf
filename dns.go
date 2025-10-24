@@ -7,18 +7,27 @@ import (
 	"errors"
 	"fmt"
 	"log"
-	"sync"
+	"time"
 
 	"github.com/cilium/ebpf/ringbuf"
 	"github.com/google/gopacket"
 	"github.com/google/gopacket/layers"
 )
 
-func processUDPPackets(ctx context.Context, reader *ringbuf.Reader, dnsLookupMap map[uint32]string, dnsLookupMapMutex *sync.RWMutex) {
+func processUDPPackets(ctx context.Context, reader *ringbuf.Reader) {
+	seenDNSPackets := map[statEntry]struct{}{}
+	resetSeenPacketsTick := time.NewTicker(time.Minute)
+	defer resetSeenPacketsTick.Stop()
+
 	for {
 		select {
 		case <-ctx.Done():
 			return
+		case <-resetSeenPacketsTick.C:
+			// Reset the seenDNSPacketIDs map every once in a while so it doesn't grow unbounded,
+			// as well the unlikely case a random ID gets re-used. There is a small chance we reset
+			// this in between processing packets that would result in a duplicate entry, but that's fine.
+			seenDNSPackets = map[statEntry]struct{}{}
 		default:
 			record, err := reader.Read()
 			if err != nil {
@@ -52,10 +61,36 @@ func processUDPPackets(ctx context.Context, reader *ringbuf.Reader, dnsLookupMap
 				log.Printf("Skipping dns packet: no questions")
 			}
 
-			// just grab the first question for now
-			dnsLookupMapMutex.Lock()
-			dnsLookupMap[uint32(udpPktDetails.Pid)] = string(dnsLayer.Questions[0].Name)
-			dnsLookupMapMutex.Unlock()
+			entry := statEntry{
+				SrcPort:       udpPktDetails.SrcPort,
+				SrcIP:         bytesToAddr(udpPktDetails.Srcip.In6U.U6Addr8),
+				DstPort:       udpPktDetails.DstPort,
+				DstIP:         bytesToAddr(udpPktDetails.Dstip.In6U.U6Addr8),
+				Proto:         "UDP",
+				Pid:           udpPktDetails.Pid,
+				Comm:          comm2String(udpPktDetails.Comm[:]),
+				DNSQueryName:  string(dnsLayer.Questions[0].Name),
+				LikelyService: "dns",
+			}
+
+			if getKubeClient() != nil {
+				entry.SourcePod = lookupPodForIP(entry.SrcIP)
+				entry.DstPod = lookupPodForIP(entry.DstIP)
+			}
+
+			// Currently we see the same DNS packet make it's journey from the originating process,
+			// to the local dns resolver, and on it's way out of the VM's network. This results in
+			// quite a few duplicate events being printed to stdout. So check if this would cause
+			// a duplicate output and skip printing it if so.
+			if _, ok := seenDNSPackets[entry]; ok {
+				log.Printf("Skipping DNS packet we've already seen")
+				continue
+			} else {
+				seenDNSPackets[entry] = struct{}{}
+			}
+
+			entry.Timestamp = time.Now().UTC()
+			fmt.Print(outputJSON([]statEntry{entry}))
 		}
 	}
 }

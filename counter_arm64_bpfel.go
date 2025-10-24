@@ -34,8 +34,13 @@ type counterStatvalue struct {
 }
 
 type counterUdpPkt struct {
-	Pid int32
-	Pkt [4096]uint8
+	Srcip   struct{ In6U struct{ U6Addr8 [16]uint8 } }
+	Dstip   struct{ In6U struct{ U6Addr8 [16]uint8 } }
+	SrcPort uint16
+	DstPort uint16
+	Pid     int32
+	Comm    [16]int8
+	Pkt     [4096]uint8
 }
 
 // loadCounter returns the embedded CollectionSpec for counter.
