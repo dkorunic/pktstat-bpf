@@ -61,6 +61,10 @@ func processUDPPackets(ctx context.Context, reader *ringbuf.Reader) {
 				log.Printf("Skipping dns packet: no questions")
 			}
 
+			if len(dnsLayer.Questions) > 0 && dnsLayer.Questions[0].Type == layers.DNSTypeHINFO {
+				continue // Skip HINFO queries
+			}
+
 			entry := statEntry{
 				SrcPort:       udpPktDetails.SrcPort,
 				SrcIP:         bytesToAddr(udpPktDetails.Srcip.In6U.U6Addr8),
