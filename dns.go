@@ -7,6 +7,8 @@ import (
 	"errors"
 	"fmt"
 	"log"
+	"os"
+	"strings"
 	"time"
 
 	"github.com/cilium/ebpf/ringbuf"
@@ -63,6 +65,16 @@ func processUDPPackets(ctx context.Context, reader *ringbuf.Reader) {
 
 			if len(dnsLayer.Questions) > 0 && dnsLayer.Questions[0].Type == layers.DNSTypeHINFO {
 				continue // Skip HINFO queries
+			}
+
+			// Skip DNS queries for the current hostname
+			if len(dnsLayer.Questions) > 0 {
+				queryName := strings.TrimSuffix(string(dnsLayer.Questions[0].Name), ".")
+				if hostname, err := os.Hostname(); err == nil {
+					if strings.EqualFold(queryName, hostname) {
+						continue // Skip queries for current hostname
+					}
+				}
 			}
 
 			entry := statEntry{
