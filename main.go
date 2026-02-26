@@ -173,7 +173,7 @@ func main() {
 		}
 
 		if *jsonOutput {
-			fmt.Println(outputJSON(m))
+			outputJSON(m)
 		} else {
 			fmt.Print(outputPlain(m))
 		}

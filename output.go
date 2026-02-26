@@ -23,11 +23,14 @@ package main
 
 import (
 	"bytes"
+	"cmp"
 	"encoding/json"
 	"fmt"
-	"sort"
+	"os"
+	"slices"
 	"strings"
 	"time"
+	"unsafe"
 
 	"github.com/cilium/ebpf"
 )
@@ -65,8 +68,8 @@ func processMap(m *ebpf.Map, start time.Time, sortFunc func([]statEntry)) ([]sta
 //
 //	stats []statEntry - the slice of statEntry objects to be sorted
 func bitrateSort(stats []statEntry) {
-	sort.Slice(stats, func(i, j int) bool {
-		return stats[i].Bitrate > stats[j].Bitrate
+	slices.SortFunc(stats, func(a, b statEntry) int {
+		return cmp.Compare(b.Bitrate, a.Bitrate)
 	})
 }
 
@@ -76,8 +79,8 @@ func bitrateSort(stats []statEntry) {
 //
 //	stats []statEntry - the slice of statEntry objects to be sorted
 func packetSort(stats []statEntry) {
-	sort.Slice(stats, func(i, j int) bool {
-		return stats[i].Packets > stats[j].Packets
+	slices.SortFunc(stats, func(a, b statEntry) int {
+		return cmp.Compare(b.Packets, a.Packets)
 	})
 }
 
@@ -87,8 +90,8 @@ func packetSort(stats []statEntry) {
 //
 //	stats []statEntry - the slice of statEntry objects to be sorted
 func bytesSort(stats []statEntry) {
-	sort.Slice(stats, func(i, j int) bool {
-		return stats[i].Bytes > stats[j].Bytes
+	slices.SortFunc(stats, func(a, b statEntry) int {
+		return cmp.Compare(b.Bytes, a.Bytes)
 	})
 }
 
@@ -98,8 +101,8 @@ func bytesSort(stats []statEntry) {
 //
 //	stats []statEntry - the slice of statEntry objects to be sorted
 func srcIPSort(stats []statEntry) {
-	sort.Slice(stats, func(i, j int) bool {
-		return stats[i].SrcIP.Compare(stats[j].SrcIP) < 0
+	slices.SortFunc(stats, func(a, b statEntry) int {
+		return a.SrcIP.Compare(b.SrcIP)
 	})
 }
 
@@ -109,8 +112,8 @@ func srcIPSort(stats []statEntry) {
 //
 //	stats []statEntry - the slice of statEntry objects to be sorted
 func dstIPSort(stats []statEntry) {
-	sort.Slice(stats, func(i, j int) bool {
-		return stats[i].DstIP.Compare(stats[j].DstIP) < 0
+	slices.SortFunc(stats, func(a, b statEntry) int {
+		return a.DstIP.Compare(b.DstIP)
 	})
 }
 
@@ -151,27 +154,29 @@ func formatBitrate(b float64) string {
 func outputPlain(m []statEntry) string {
 	var sb strings.Builder
 
+	sb.Grow(len(m) * 128)
+
 	for _, v := range m {
 		switch v.Proto {
 		case "ICMPv4", "IPv6-ICMP":
-			sb.WriteString(fmt.Sprintf("bitrate: %v, packets: %d, bytes: %d, proto: %v, src: %v, dst: %v, type: %d, code: %d",
-				formatBitrate(v.Bitrate), v.Packets, v.Bytes, v.Proto, v.SrcIP, v.DstIP, v.SrcPort, v.DstPort))
+			fmt.Fprintf(&sb, "bitrate: %v, packets: %d, bytes: %d, proto: %v, src: %v, dst: %v, type: %d, code: %d",
+				formatBitrate(v.Bitrate), v.Packets, v.Bytes, v.Proto, v.SrcIP, v.DstIP, v.SrcPort, v.DstPort)
 		default:
-			sb.WriteString(fmt.Sprintf("bitrate: %v, packets: %d, bytes: %d, proto: %v, src: %v:%d, dst: %v:%d",
-				formatBitrate(v.Bitrate), v.Packets, v.Bytes, v.Proto, v.SrcIP, v.SrcPort, v.DstIP, v.DstPort))
+			fmt.Fprintf(&sb, "bitrate: %v, packets: %d, bytes: %d, proto: %v, src: %v:%d, dst: %v:%d",
+				formatBitrate(v.Bitrate), v.Packets, v.Bytes, v.Proto, v.SrcIP, v.SrcPort, v.DstIP, v.DstPort)
 		}
 
 		if *useKProbes || *useCGroup != "" {
 			if v.Pid > 0 {
-				sb.WriteString(fmt.Sprintf(", pid: %d", v.Pid))
+				fmt.Fprintf(&sb, ", pid: %d", v.Pid)
 			}
 
 			if v.Comm != "" {
-				sb.WriteString(fmt.Sprintf(", comm: %v", v.Comm))
+				fmt.Fprintf(&sb, ", comm: %v", v.Comm)
 			}
 
 			if v.CGroup != "" {
-				sb.WriteString(fmt.Sprintf(", cgroup: %v", v.CGroup))
+				fmt.Fprintf(&sb, ", cgroup: %v", v.CGroup)
 			}
 		}
 
@@ -193,10 +198,9 @@ func outputPlain(m []statEntry) string {
 // Returns:
 //
 //	string - the JSON string representation of m
-func outputJSON(m []statEntry) string {
-	out, _ := json.Marshal(m)
-
-	return string(out)
+func outputJSON(m []statEntry) {
+	enc := json.NewEncoder(os.Stdout)
+	_ = enc.Encode(m)
 }
 
 // bsliceToString converts a slice of int8 values to a string by first
@@ -210,13 +214,11 @@ func outputJSON(m []statEntry) string {
 // Returns:
 //   - string: The resulting string after conversion and trimming.
 func bsliceToString(bs []int8) string {
-	b := make([]byte, len(bs))
-	for i, v := range bs {
-		b[i] = byte(v)
-	}
+	// reinterpret []int8 as []byte without allocation (identical memory layout)
+	b := unsafe.Slice((*byte)(unsafe.Pointer(unsafe.SliceData(bs))), len(bs))
 
-	// trim excess NULLs
-	b = bytes.Trim(b, "\x00")
+	// trim trailing NULLs from C string; TrimRight is correct here since comm is null-terminated
+	b = bytes.TrimRight(b, "\x00")
 
 	return string(b)
 }

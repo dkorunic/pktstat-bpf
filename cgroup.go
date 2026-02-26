@@ -22,12 +22,10 @@
 package main
 
 import (
-	"bytes"
 	"encoding/binary"
 	"errors"
 	"fmt"
 	"io/fs"
-	"maps"
 	"os"
 	"path/filepath"
 	"sync"
@@ -110,9 +108,7 @@ func cgroupCacheRefresh(dir string) {
 	cGroupCacheLock.Lock()
 	defer cGroupCacheLock.Unlock()
 
-	if mapping, err := cGroupWalk(dir); err == nil {
-		maps.Copy(cGroupCache, mapping)
-	}
+	_ = cGroupWalk(dir, cGroupCache)
 }
 
 // cGroupWalk walks the cgroup filesystem and returns a mapping of cgroup IDs to their corresponding paths.
@@ -121,10 +117,8 @@ func cgroupCacheRefresh(dir string) {
 // The function returns a mapping of cgroup IDs to their corresponding paths. If an error occurs during the walk, it is returned as the second argument.
 //
 // The function is safe to call concurrently.
-func cGroupWalk(dir string) (map[uint64]string, error) {
-	mapping := map[uint64]string{}
-
-	err := filepath.WalkDir(dir, func(path string, d fs.DirEntry, err error) error {
+func cGroupWalk(dir string, mapping map[uint64]string) error {
+	return filepath.WalkDir(dir, func(path string, d fs.DirEntry, err error) error {
 		if err != nil {
 			// ignore disappearing files/directories
 			if errors.Is(err, fs.ErrNotExist) {
@@ -150,8 +144,6 @@ func cGroupWalk(dir string) (map[uint64]string, error) {
 
 		return nil
 	})
-
-	return mapping, err
 }
 
 // getInodeID returns the inode number of the file at the given path.
@@ -202,7 +194,7 @@ func cGroupWatcher(objs cgroupObjects) (*perf.Reader, error) {
 				continue
 			}
 
-			if err = binary.Read(bytes.NewBuffer(r.RawSample), binary.LittleEndian, &event); err != nil {
+			if _, err = binary.Decode(r.RawSample, binary.LittleEndian, &event); err != nil {
 				continue
 			}
 

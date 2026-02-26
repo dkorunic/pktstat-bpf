@@ -182,9 +182,10 @@ func updateStatsTable(app *tview.Application, table *tview.Table, tableSort *fun
 		headers = headers[:8]
 	}
 
-	var m []statEntry
-
 	for {
+		// read eBPF map outside the draw closure so the UI goroutine is not blocked on the syscall
+		snapshot, _ := processMap(objs.PktCount, startTime, *tableSort)
+
 		app.QueueUpdateDraw(func() {
 			table.Clear()
 
@@ -199,9 +200,7 @@ func updateStatsTable(app *tview.Application, table *tview.Table, tableSort *fun
 				})
 			}
 
-			m, _ = processMap(objs.PktCount, startTime, *tableSort)
-
-			for i, v := range m {
+			for i, v := range snapshot {
 				// populate bitrate, packets, bytes and proto
 				table.SetCell(i+1, 0, tview.NewTableCell(formatBitrate(v.Bitrate)).
 					SetTextColor(tcell.ColorWhite).
