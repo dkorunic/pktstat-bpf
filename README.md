@@ -7,15 +7,15 @@
 
 ## About
 
-pktstat-bpf is a lightweight replacement for the ncurses/libpcap-based [pktstat](https://github.com/dleonard0/pktstat), powered by a Linux eBPF ([extended Berkeley Packet Filter](https://prototype-kernel.readthedocs.io/en/latest/bpf/)) program. It is capable of gathering packet statistics even under **very high traffic volumes** — typically several million packets per second on an average server. In high-volume scenarios such as DoS attacks, traditional packet capture solutions often become unreliable due to increasing packet loss, making eBPF-based capture a more robust alternative.
+pktstat-bpf is a lightweight replacement for the ncurses/libpcap-based [pktstat](https://github.com/dleonard0/pktstat), powered by Linux eBPF ([extended Berkeley Packet Filter](https://prototype-kernel.readthedocs.io/en/latest/bpf/)). It can gather packet statistics even under **very high traffic volumes** — typically several million packets per second on an average server. In high-volume scenarios such as DoS attacks, traditional packet capture solutions often become unreliable due to packet loss; eBPF-based capture is a more robust alternative.
 
-At the end of execution, the program displays per-IP and per-protocol statistics sorted by per-connection bps, packet counts, and (source-IP:port, destination-IP:port) tuples.
+At the end of execution, the program displays per-IP and per-protocol statistics sorted by per-connection bitrate, packet count, and (source IP:port, destination IP:port) tuples.
 
-The program consists of [eBPF code written in C](bpf/counter.bpf.c) and a pure-Go userland component that parses and outputs final IP/port/protocol/bitrate statistics. The Go component uses the [cilium/ebpf](https://github.com/cilium/ebpf) library to load and run the eBPF program and to interface with the eBPF map.
+The program consists of [eBPF code written in C](bpf/counter.bpf.c) and a pure-Go userland component that parses and displays final IP/port/protocol/bitrate statistics. The Go component uses the [cilium/ebpf](https://github.com/cilium/ebpf) library to load and run the eBPF program and to interact with the eBPF map.
 
-By default, the eBPF component uses **TC** (Traffic Control) eBPF hooks with TCX attaching, requiring at minimum Linux kernel **v6.6**, and collects both ingress and egress traffic statistics for TCP, UDP, ICMPv4, and ICMPv6. It can also switch to the faster [XDP](https://github.com/xdp-project/xdp-tutorial) (eXpress Data Path) hook, at the cost of **losing egress statistics** since **XDP** operates only in the ingress path. XDP mode requires at minimum Linux kernel **v5.9** due to its program-to-interface attachment calls. Some distributions (notably Red Hat Enterprise Linux) have backported XDP/TC patches, so the eBPF program may work on older kernels as well (see Requirements for details).
+By default, the eBPF component uses **TC** (Traffic Control) eBPF hooks with TCX attaching, requiring at minimum Linux kernel **v6.6**, and collects both ingress and egress traffic statistics for TCP, UDP, ICMPv4, and ICMPv6. It can also switch to the faster [XDP](https://github.com/xdp-project/xdp-tutorial) (eXpress Data Path) hook at the cost of **losing egress statistics**, since XDP operates only in the ingress path. XDP mode requires at minimum Linux kernel **v5.9** due to its program-to-interface attachment API. Some distributions (notably Red Hat Enterprise Linux) have backported XDP/TC patches, so the eBPF program may work on older kernels as well (see Requirements for details).
 
-Alternatively, the tool can use **KProbes** to monitor TCP, UDP, ICMPv4, and ICMPv6 traffic across all containers, Kubernetes pods, NAT translations, and forwarded flows. In this mode, it also displays the process ID, process name, and cgroup path for traffic sent or delivered to a userspace application. KProbes operate closest to userspace and therefore have the highest overhead, but they provide uniquely useful process-level visibility. KProbes support older Linux kernels as well, with the hard dependency being a [BTF-enabled](https://docs.ebpf.io/concepts/btf/) kernel. The program resolves kernel-level cgroup IDs to cgroup paths (under `/sys/fs/cgroup`) by scanning the cgroup filesystem and consuming kernel cgroup mkdir events via [dedicated eBPF code](bpf/cgroup.bpf.c).
+Alternatively, the tool can use **KProbes** to monitor TCP, UDP, ICMPv4, and ICMPv6 traffic across all containers, Kubernetes pods, NAT translations, and forwarded flows. In this mode, it also displays the process ID, process name, and cgroup path for traffic sent or delivered to a userspace application. KProbes operate closest to userspace and therefore have the highest overhead, but they provide uniquely useful process-level visibility. The hard dependency for KProbes is a [BTF-enabled](https://docs.ebpf.io/concepts/btf/) kernel. The program resolves kernel-level cgroup IDs to cgroup paths (under `/sys/fs/cgroup`) by scanning the cgroup filesystem and consuming kernel cgroup mkdir events via [dedicated eBPF code](bpf/cgroup.bpf.c).
 
 It is also possible to monitor a specific **cgroup** directly, with full support for both ingress and egress traffic. You can monitor all traffic by attaching to the root cgroup (e.g. `/sys/fs/cgroup`). Process tracking is available in cgroup mode, but only for traffic whose socket creation was observed by pktstat-bpf.
 ![Demo](demo.gif)
@@ -34,7 +34,7 @@ The author has given several eBPF talks, available below along with the accompan
 
 ## Requirements
 
-The hard requirement for the eBPF program is Linux kernel **4.10** with BTF enabled; on such older kernels, KProbes will likely be the only supported mode (e.g. RHEL/CentOS 8, Debian 10). From kernel **5.9** onwards (RHEL/CentOS 9, Debian 11, Ubuntu 20.04), XDP mode is supported. TC may work as early as **5.14** (RHEL/CentOS 9) if the distribution has backported TC eBPF patches. On all recent distributions (RHEL/CentOS 9, Debian 12, Ubuntu 24.04), all eBPF modes are fully supported.
+The minimum requirement for the eBPF program is Linux kernel **4.10** with BTF enabled; on such older kernels, KProbes will likely be the only supported mode (e.g. RHEL/CentOS 8, Debian 10). From kernel **5.9** onwards (RHEL/CentOS 9, Debian 11, Ubuntu 20.04), XDP mode is supported. TC may work as early as **5.14** (RHEL/CentOS 9) if the distribution has backported TC eBPF patches. On all recent distributions (RHEL/CentOS 9, Debian 12, Ubuntu 24.04), all eBPF modes are fully supported.
 
 Loading eBPF programs typically requires root privileges. Additionally, pointer arithmetic in the eBPF code causes the [eBPF verifier](https://docs.kernel.org/bpf/verifier.html) to reject non-root use explicitly. The kernel must have BTF enabled, and certain features require more recent kernels, as shown in the table below.
 
@@ -44,7 +44,7 @@ BPF JIT (Just-In-Time compilation) should be enabled for best performance (most 
 sysctl -w net.core.bpf_jit_enable=1
 ```
 
-In XDP mode, not all NIC drivers support **Native XDP** (where the XDP program is loaded by the NIC driver as part of the initial receive path; most common 10G drivers already support this) or **Offloaded XDP** (where the XDP program runs directly on the NIC hardware without using the CPU). If native or offloaded XDP is unavailable, the kernel falls back to **Generic XDP**, which offers reduced performance. Generic XDP requires no special NIC driver support, but operates much later in the networking stack, making its performance roughly equivalent to TC hooks.
+In XDP mode, not all NIC drivers support **Native XDP** (where the XDP program is loaded by the NIC driver as part of the initial receive path; most common 10 Gbps drivers already support this) or **Offloaded XDP** (where the XDP program runs directly on the NIC hardware without using the CPU). If native or offloaded XDP is unavailable, the kernel falls back to **Generic XDP**, which offers reduced performance. Generic XDP requires no special NIC driver support, but operates much later in the networking stack, making its performance roughly equivalent to TC hooks.
 
 The following table maps capture modes to their requirements and expected performance:
 
@@ -78,7 +78,7 @@ FLAGS
   -k, --kprobes            if true, use KProbes for per-process TCP/UDP statistics
   -g, --tui                if true, enable TUI
       --version            display program version
-  -i, --iface STRING       interface to read from (default: anpi4)
+  -i, --iface STRING       interface to read from (default: eth0)
       --xdp_mode STRING    XDP attach mode (auto, generic, native or offload; native and offload require NIC driver support) (default: auto)
   -r, --refresh DURATION   refresh interval in TUI (default: 1s)
   -t, --timeout DURATION   timeout for packet capture in CLI (default: 10m0s)
@@ -88,7 +88,19 @@ Use `--iface` to specify the network interface to capture on.
 
 `--timeout` stops the program after the specified duration. You can also interrupt it at any time with Ctrl-C, SIGTERM, or SIGINT.
 
-`--tui` switches to a simple interactive TUI designed for continuous monitoring. Use the arrow keys to navigate the statistics table, and press `q` or `x` to exit.
+`--tui` switches to a simple interactive TUI designed for continuous monitoring. The following keyboard shortcuts are available:
+
+| Key       | Action                    |
+| --------- | ------------------------- |
+| `↑` / `k` | Move up                   |
+| `↓` / `j` | Move down                 |
+| `q` / `x` | Exit                      |
+| `r`       | Redraw and jump to top    |
+| `0`       | Sort by bitrate (default) |
+| `1`       | Sort by packet count      |
+| `2`       | Sort by byte count        |
+| `3`       | Sort by source IP         |
+| `4`       | Sort by destination IP    |
 
 `--json` outputs traffic statistics in JSON format.
 
