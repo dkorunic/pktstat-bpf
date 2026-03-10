@@ -30,9 +30,25 @@ import (
 	"github.com/cilium/ebpf"
 )
 
+const batchSize = 4096
+
+type batchBuffers struct {
+	keys   []counterStatkey
+	values []counterStatvalue
+}
+
 var (
 	haveBatchMapSupport      bool
 	checkBatchMapSupportOnce sync.Once
+
+	batchPool = sync.Pool{
+		New: func() any {
+			return &batchBuffers{
+				keys:   make([]counterStatkey, batchSize),
+				values: make([]counterStatvalue, batchSize),
+			}
+		},
+	}
 )
 
 // checkBatchMapSupport checks whether the given ebpf.Map supports batch lookups.
@@ -90,10 +106,11 @@ func listMap(m *ebpf.Map, start time.Time) ([]statEntry, error) {
 //
 // listMapBatch is used by listMap when the map supports batch lookups.
 func listMapBatch(m *ebpf.Map, start time.Time) ([]statEntry, error) {
-	const batchSize = 4096
+	buf := batchPool.Get().(*batchBuffers)
+	defer batchPool.Put(buf)
 
-	keys := make([]counterStatkey, batchSize)
-	values := make([]counterStatvalue, batchSize)
+	keys := buf.keys
+	values := buf.values
 
 	dur := time.Since(start).Seconds()
 	stats := make([]statEntry, 0, batchSize)

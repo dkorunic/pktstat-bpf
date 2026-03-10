@@ -43,8 +43,6 @@ var (
 	cGroupCache     map[uint64]string
 	cGroupCacheLock sync.RWMutex
 	cGroupInitOnce  sync.Once
-
-	ErrNotStatT = errors.New("not a syscall.Stat_t") // not a syscall.Stat_t for path %s
 )
 
 // cGroupToPath takes a cgroup ID and returns the corresponding path in the cgroup filesystem.
@@ -157,14 +155,9 @@ func cGroupWalk(dir string, mapping map[uint64]string) error {
 //
 // The function is safe to call concurrently.
 func getInodeID(path string) (uint64, error) {
-	i, err := os.Stat(path)
-	if err != nil {
+	var s syscall.Stat_t
+	if err := syscall.Stat(path, &s); err != nil {
 		return 0, err
-	}
-
-	s, ok := i.Sys().(*syscall.Stat_t)
-	if !ok {
-		return 0, fmt.Errorf("%w: %s", ErrNotStatT, path)
 	}
 
 	return s.Ino, nil

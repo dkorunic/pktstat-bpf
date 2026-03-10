@@ -98,6 +98,8 @@ func main() {
 
 		rd, err := cGroupWatcher(objsCgroup)
 		if err != nil {
+			log.Printf("Error starting cgroup watcher: %v", err)
+		} else {
 			defer func() { _ = rd.Close() }()
 		}
 	// KProbes w/ PID tracking
@@ -120,6 +122,8 @@ func main() {
 
 		rd, err := cGroupWatcher(objsCgroup)
 		if err != nil {
+			log.Printf("Error starting cgroup watcher: %v", err)
+		} else {
 			defer func() { _ = rd.Close() }()
 		}
 	// XDP

@@ -25,7 +25,6 @@ import (
 	"bytes"
 	"cmp"
 	"encoding/json"
-	"fmt"
 	"os"
 	"slices"
 	"strconv"
@@ -158,30 +157,54 @@ func outputPlain(m []statEntry) string {
 	sb.Grow(len(m) * 128)
 
 	for _, v := range m {
+		sb.WriteString("bitrate: ")
+		sb.WriteString(formatBitrate(v.Bitrate))
+		sb.WriteString(", packets: ")
+		sb.WriteString(strconv.FormatUint(v.Packets, 10))
+		sb.WriteString(", bytes: ")
+		sb.WriteString(strconv.FormatUint(v.Bytes, 10))
+		sb.WriteString(", proto: ")
+		sb.WriteString(v.Proto)
+
 		switch v.Proto {
 		case "ICMPv4", "IPv6-ICMP":
-			fmt.Fprintf(&sb, "bitrate: %v, packets: %d, bytes: %d, proto: %v, src: %v, dst: %v, type: %d, code: %d",
-				formatBitrate(v.Bitrate), v.Packets, v.Bytes, v.Proto, v.SrcIP, v.DstIP, v.SrcPort, v.DstPort)
+			sb.WriteString(", src: ")
+			sb.WriteString(v.SrcIP.String())
+			sb.WriteString(", dst: ")
+			sb.WriteString(v.DstIP.String())
+			sb.WriteString(", type: ")
+			sb.WriteString(strconv.FormatUint(uint64(v.SrcPort), 10))
+			sb.WriteString(", code: ")
+			sb.WriteString(strconv.FormatUint(uint64(v.DstPort), 10))
 		default:
-			fmt.Fprintf(&sb, "bitrate: %v, packets: %d, bytes: %d, proto: %v, src: %v:%d, dst: %v:%d",
-				formatBitrate(v.Bitrate), v.Packets, v.Bytes, v.Proto, v.SrcIP, v.SrcPort, v.DstIP, v.DstPort)
+			sb.WriteString(", src: ")
+			sb.WriteString(v.SrcIP.String())
+			sb.WriteByte(':')
+			sb.WriteString(strconv.FormatUint(uint64(v.SrcPort), 10))
+			sb.WriteString(", dst: ")
+			sb.WriteString(v.DstIP.String())
+			sb.WriteByte(':')
+			sb.WriteString(strconv.FormatUint(uint64(v.DstPort), 10))
 		}
 
 		if *useKProbes || *useCGroup != "" {
 			if v.Pid > 0 {
-				fmt.Fprintf(&sb, ", pid: %d", v.Pid)
+				sb.WriteString(", pid: ")
+				sb.WriteString(strconv.FormatInt(int64(v.Pid), 10))
 			}
 
 			if v.Comm != "" {
-				fmt.Fprintf(&sb, ", comm: %v", v.Comm)
+				sb.WriteString(", comm: ")
+				sb.WriteString(v.Comm)
 			}
 
 			if v.CGroup != "" {
-				fmt.Fprintf(&sb, ", cgroup: %v", v.CGroup)
+				sb.WriteString(", cgroup: ")
+				sb.WriteString(v.CGroup)
 			}
 		}
 
-		sb.WriteString("\n")
+		sb.WriteByte('\n')
 	}
 
 	return sb.String()
