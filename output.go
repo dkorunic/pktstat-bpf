@@ -154,7 +154,12 @@ func formatBitrate(b float64) string {
 func outputPlain(m []statEntry) string {
 	var sb strings.Builder
 
-	sb.Grow(len(m) * 128)
+	perEntry := 128
+	if *useKProbes || *useCGroup != "" {
+		perEntry = 256
+	}
+
+	sb.Grow(len(m) * perEntry)
 
 	for _, v := range m {
 		sb.WriteString("bitrate: ")

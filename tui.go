@@ -162,6 +162,9 @@ func drawTUI(objs counterObjects, startTime time.Time) {
 func updateStatsTable(app *tview.Application, table *tview.Table, tableSort *func(stats []statEntry),
 	objs counterObjects, startTime time.Time,
 ) {
+	ticker := time.NewTicker(*refresh)
+	defer ticker.Stop()
+
 	headers := []string{
 		"bitrate", // column 0
 		"packets", // column 1
@@ -236,11 +239,11 @@ func updateStatsTable(app *tview.Application, table *tview.Table, tableSort *fun
 						SetTextColor(tcell.ColorWhite).
 						SetExpansion(1))
 				default:
-					table.SetCell(i+1, 4, tview.NewTableCell(fmt.Sprintf("%v:%d", v.SrcIP, v.SrcPort)).
+					table.SetCell(i+1, 4, tview.NewTableCell(v.SrcIP.String()+":"+strconv.Itoa(int(v.SrcPort))).
 						SetTextColor(tcell.ColorWhite).
 						SetExpansion(1))
 
-					table.SetCell(i+1, 5, tview.NewTableCell(fmt.Sprintf("%v:%d", v.DstIP, v.DstPort)).
+					table.SetCell(i+1, 5, tview.NewTableCell(v.DstIP.String()+":"+strconv.Itoa(int(v.DstPort))).
 						SetTextColor(tcell.ColorWhite).
 						SetExpansion(1))
 
@@ -270,6 +273,6 @@ func updateStatsTable(app *tview.Application, table *tview.Table, tableSort *fun
 			}
 		})
 
-		time.Sleep(*refresh)
+		<-ticker.C
 	}
 }

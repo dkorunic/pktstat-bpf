@@ -24,10 +24,11 @@ package main
 import (
 	"encoding/binary"
 	"errors"
-	"fmt"
 	"io/fs"
 	"os"
 	"path/filepath"
+	"strconv"
+	"strings"
 	"sync"
 	"syscall"
 
@@ -79,7 +80,7 @@ func cGroupToPath(id uint64) string {
 
 	// Create negative cache entry if still missing after walk.
 	if p, ok = cGroupCache[id]; !ok {
-		p = fmt.Sprintf("cgroup-id: %v", id)
+		p = "cgroup-id: " + strconv.FormatUint(id, 10)
 		cGroupCache[id] = p
 	}
 
@@ -102,16 +103,19 @@ func cGroupCacheInit() {
 
 // cgroupCacheRefresh refreshes the cache with the current cgroup paths.
 //
-// It walks the cgroup filesystem from the given directory and updates the cache
-// with the cgroup IDs and their corresponding paths. If the cache is already up
-// to date, the function does nothing.
+// It walks the cgroup filesystem from the given directory and builds a new
+// mapping outside of any lock. The global cache is then replaced atomically
+// under a brief write lock, so concurrent readers are not blocked for the
+// duration of the filesystem walk.
 //
 // The function is safe to call concurrently.
 func cgroupCacheRefresh(dir string) {
-	cGroupCacheLock.Lock()
-	defer cGroupCacheLock.Unlock()
+	fresh := make(map[uint64]string)
+	_ = cGroupWalk(dir, fresh)
 
-	_ = cGroupWalk(dir, cGroupCache)
+	cGroupCacheLock.Lock()
+	cGroupCache = fresh
+	cGroupCacheLock.Unlock()
 }
 
 // cGroupWalk walks the cgroup filesystem and returns a mapping of cgroup IDs to their corresponding paths.
@@ -143,7 +147,7 @@ func cGroupWalk(dir string, mapping map[uint64]string) error {
 			return err
 		}
 
-		mapping[i] = path
+		mapping[i] = strings.TrimPrefix(path, CGroupRootPath)
 
 		return nil
 	})
@@ -198,7 +202,7 @@ func cGroupWatcher(objs cgroupObjects) (*perf.Reader, error) {
 
 			path := bsliceToString(event.Path[:])
 			cGroupCacheLock.Lock()
-			cGroupCache[event.Cgroupid] = path
+			cGroupCache[event.Cgroupid] = strings.TrimPrefix(path, CGroupRootPath)
 			cGroupCacheLock.Unlock()
 		}
 	}()

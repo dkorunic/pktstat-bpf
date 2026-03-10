@@ -23,7 +23,6 @@ package main
 
 import (
 	"errors"
-	"strings"
 	"sync"
 	"time"
 
@@ -113,7 +112,7 @@ func listMapBatch(m *ebpf.Map, start time.Time) ([]statEntry, error) {
 	values := buf.values
 
 	dur := time.Since(start).Seconds()
-	stats := make([]statEntry, 0, batchSize)
+	stats := make([]statEntry, 0, m.MaxEntries())
 
 	var cursor ebpf.MapBatchCursor
 
@@ -198,7 +197,7 @@ func addStats(stats []statEntry, key counterStatkey, val counterStatvalue, dur f
 		Bitrate: 8 * float64(val.Bytes) / dur,
 		Pid:     key.Pid,
 		Comm:    bsliceToString(key.Comm[:]),
-		CGroup:  strings.TrimPrefix(cGroupToPath(key.Cgroupid), CGroupRootPath),
+		CGroup:  cGroupToPath(key.Cgroupid),
 	})
 
 	return stats
