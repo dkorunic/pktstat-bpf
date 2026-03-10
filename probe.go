@@ -25,6 +25,7 @@ import (
 	"errors"
 	"log"
 	"net"
+	"slices"
 
 	"github.com/cilium/ebpf"
 	"github.com/cilium/ebpf/features"
@@ -63,6 +64,8 @@ func startKProbes(hooks []kprobeHook, links []link.Link) []link.Link {
 	if err != nil {
 		log.Fatalf("Error checking KProbes support: %v", err)
 	}
+
+	links = slices.Grow(links, len(hooks))
 
 	for _, kp := range hooks {
 		l, err = link.Kprobe(kp.kprobe, kp.prog, nil)

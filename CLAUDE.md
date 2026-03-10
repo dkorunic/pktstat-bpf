@@ -27,7 +27,7 @@ pktstat-bpf is a Linux eBPF packet statistics tool. It has two layers:
 - `bpf/cgroup.bpf.c` — raw tracepoint on `cgroup_mkdir` to push new CGroup path events to userspace via perf buffer.
 
 **Userland layer (Go, root package `main`):**
-- `gen.go` — `//go:generate` directives that invoke `bpf2go` to compile each `.bpf.c` for `amd64` and `arm64`, producing `counter_{amd64,arm64}_bpfel.{go,o}` and `cgroup_{amd64,arm64}_bpfel.{go,o}`.
+- `gen.go` — `//go:generate` directives that invoke `bpf2go` to compile each `.bpf.c` for `amd64` and `arm64`, producing `counter_{x86,arm64}_bpfel.{go,o}` and `cgroup_{x86,arm64}_bpfel.{go,o}` (bpf2go maps `-target amd64` → `x86` in filenames).
 - `main.go` — program entry: loads both eBPF objects, resolves interface, selects capture mode (TC / XDP / KProbes / CGroup), runs TUI or CLI loop.
 - `probe.go` — `startTC`, `startXDP`, `startKProbes`, `startCgroup`, `startCGroupTrace`: attach eBPF programs to hooks.
 - `map.go` — reads `PktCount` eBPF LRU hash map; prefers `BatchLookup` (kernel ≥5.6), falls back to iterator.

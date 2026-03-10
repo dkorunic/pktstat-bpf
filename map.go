@@ -23,6 +23,7 @@ package main
 
 import (
 	"errors"
+	"strings"
 	"sync"
 	"time"
 
@@ -89,23 +90,23 @@ func listMap(m *ebpf.Map, start time.Time) ([]statEntry, error) {
 //
 // listMapBatch is used by listMap when the map supports batch lookups.
 func listMapBatch(m *ebpf.Map, start time.Time) ([]statEntry, error) {
-	keys := make([]counterStatkey, m.MaxEntries())
-	values := make([]counterStatvalue, m.MaxEntries())
+	const batchSize = 4096
+
+	keys := make([]counterStatkey, batchSize)
+	values := make([]counterStatvalue, batchSize)
 
 	dur := time.Since(start).Seconds()
-	stats := make([]statEntry, 0, m.MaxEntries())
+	stats := make([]statEntry, 0, batchSize)
 
 	var cursor ebpf.MapBatchCursor
-	var (
-		count int
-		c     int
-		err   error
-	)
 
 	// BPF_MAP_LOOKUP_BATCH support requires v5.6 kernel
 	for {
-		c, err = m.BatchLookup(&cursor, keys, values, nil)
-		count += c
+		c, err := m.BatchLookup(&cursor, keys, values, nil)
+
+		for i := range keys[:c] {
+			stats = addStats(stats, keys[i], values[i], dur)
+		}
 
 		if err != nil {
 			if errors.Is(err, ebpf.ErrKeyNotExist) {
@@ -114,10 +115,6 @@ func listMapBatch(m *ebpf.Map, start time.Time) ([]statEntry, error) {
 
 			return nil, err
 		}
-	}
-
-	for i := 0; i < len(keys) && i < count; i++ {
-		stats = addStats(stats, keys[i], values[i], dur)
 	}
 
 	return stats, nil
@@ -184,7 +181,7 @@ func addStats(stats []statEntry, key counterStatkey, val counterStatvalue, dur f
 		Bitrate: 8 * float64(val.Bytes) / dur,
 		Pid:     key.Pid,
 		Comm:    bsliceToString(key.Comm[:]),
-		CGroup:  cGroupToPath(key.Cgroupid),
+		CGroup:  strings.TrimPrefix(cGroupToPath(key.Cgroupid), CGroupRootPath),
 	})
 
 	return stats

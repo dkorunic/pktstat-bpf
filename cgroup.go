@@ -61,26 +61,31 @@ func cGroupToPath(id uint64) string {
 
 	// fetch from cache first
 	cGroupCacheLock.RLock()
-	if p, ok := cGroupCache[id]; ok {
-		cGroupCacheLock.RUnlock()
-
-		return p
-	}
+	p, ok := cGroupCache[id]
 	cGroupCacheLock.RUnlock()
 
-	// force the cache refresh if missing
-	cgroupCacheRefresh(CGroupRootPath)
+	if ok {
+		return p
+	}
 
+	// Upgrade to write lock; re-check to avoid redundant WalkDir from concurrent misses.
 	cGroupCacheLock.Lock()
 	defer cGroupCacheLock.Unlock()
 
-	// create negative cache entry if still missing
-	if _, ok := cGroupCache[id]; !ok {
-		cGroupCache[id] = fmt.Sprintf("cgroup-id: %v", id)
+	if p, ok = cGroupCache[id]; ok {
+		return p
 	}
 
-	// return the result, positive or negative
-	return cGroupCache[id]
+	// ID genuinely absent: rebuild cache from filesystem.
+	_ = cGroupWalk(CGroupRootPath, cGroupCache)
+
+	// Create negative cache entry if still missing after walk.
+	if p, ok = cGroupCache[id]; !ok {
+		p = fmt.Sprintf("cgroup-id: %v", id)
+		cGroupCache[id] = p
+	}
+
+	return p
 }
 
 // cGroupCacheInit initializes the cgroup cache and starts a goroutine to watch the cgroup filesystem for create events.
@@ -198,8 +203,9 @@ func cGroupWatcher(objs cgroupObjects) (*perf.Reader, error) {
 				continue
 			}
 
+			path := bsliceToString(event.Path[:])
 			cGroupCacheLock.Lock()
-			cGroupCache[event.Cgroupid] = bsliceToString(event.Path[:])
+			cGroupCache[event.Cgroupid] = path
 			cGroupCacheLock.Unlock()
 		}
 	}()

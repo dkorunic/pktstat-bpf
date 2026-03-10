@@ -28,6 +28,7 @@ import (
 	"fmt"
 	"os"
 	"slices"
+	"strconv"
 	"strings"
 	"time"
 	"unsafe"
@@ -123,18 +124,18 @@ func dstIPSort(stats []statEntry) {
 func formatBitrate(b float64) string {
 	switch {
 	case b < Kbps:
-		return fmt.Sprintf("%.2f bps", b)
+		return strconv.FormatFloat(b, 'f', 2, 64) + " bps"
 	case b < 10*Kbps:
-		return fmt.Sprintf("%.2f Kbps", b/Kbps)
+		return strconv.FormatFloat(b/Kbps, 'f', 2, 64) + " Kbps"
 	case b < 10*Mbps:
-		return fmt.Sprintf("%.2f Mbps", b/Mbps)
+		return strconv.FormatFloat(b/Mbps, 'f', 2, 64) + " Mbps"
 	case b < 10*Gbps:
-		return fmt.Sprintf("%.2f Gbps", b/Gbps)
+		return strconv.FormatFloat(b/Gbps, 'f', 2, 64) + " Gbps"
 	case b < 10*Tbps:
-		return fmt.Sprintf("%.2f Tbps", b/Tbps)
+		return strconv.FormatFloat(b/Tbps, 'f', 2, 64) + " Tbps"
 	}
 
-	return fmt.Sprintf("%.2fTbps", b/Tbps)
+	return strconv.FormatFloat(b/Tbps, 'f', 2, 64) + " Tbps"
 }
 
 // outputPlain formats the provided statEntry slice into a plain text string.
@@ -200,6 +201,7 @@ func outputPlain(m []statEntry) string {
 //	string - the JSON string representation of m
 func outputJSON(m []statEntry) {
 	enc := json.NewEncoder(os.Stdout)
+	enc.SetEscapeHTML(false)
 	_ = enc.Encode(m)
 }
 
@@ -217,8 +219,10 @@ func bsliceToString(bs []int8) string {
 	// reinterpret []int8 as []byte without allocation (identical memory layout)
 	b := unsafe.Slice((*byte)(unsafe.Pointer(unsafe.SliceData(bs))), len(bs))
 
-	// trim trailing NULLs from C string; TrimRight is correct here since comm is null-terminated
-	b = bytes.TrimRight(b, "\x00")
+	// find null terminator of C string and slice to it
+	if i := bytes.IndexByte(b, 0); i >= 0 {
+		b = b[:i]
+	}
 
 	return string(b)
 }
