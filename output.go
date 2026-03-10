@@ -25,6 +25,7 @@ import (
 	"bytes"
 	"cmp"
 	"encoding/json"
+	"fmt"
 	"os"
 	"slices"
 	"strconv"
@@ -124,14 +125,12 @@ func formatBitrate(b float64) string {
 	switch {
 	case b < Kbps:
 		return strconv.FormatFloat(b, 'f', 2, 64) + " bps"
-	case b < 10*Kbps:
+	case b < Mbps:
 		return strconv.FormatFloat(b/Kbps, 'f', 2, 64) + " Kbps"
-	case b < 10*Mbps:
+	case b < Gbps:
 		return strconv.FormatFloat(b/Mbps, 'f', 2, 64) + " Mbps"
-	case b < 10*Gbps:
+	case b < Tbps:
 		return strconv.FormatFloat(b/Gbps, 'f', 2, 64) + " Gbps"
-	case b < 10*Tbps:
-		return strconv.FormatFloat(b/Tbps, 'f', 2, 64) + " Tbps"
 	}
 
 	return strconv.FormatFloat(b/Tbps, 'f', 2, 64) + " Tbps"
@@ -230,7 +229,10 @@ func outputPlain(m []statEntry) string {
 func outputJSON(m []statEntry) {
 	enc := json.NewEncoder(os.Stdout)
 	enc.SetEscapeHTML(false)
-	_ = enc.Encode(m)
+
+	if err := enc.Encode(m); err != nil {
+		_, _ = fmt.Fprintf(os.Stderr, "Error encoding JSON output: %v\n", err)
+	}
 }
 
 // bsliceToString converts a slice of int8 values to a string by first

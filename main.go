@@ -144,7 +144,9 @@ func main() {
 		drawTUI(objsCounter, startTime)
 	} else {
 		signalCh := make(chan os.Signal, 1)
+
 		signal.Notify(signalCh, os.Interrupt, syscall.SIGTERM, syscall.SIGINT)
+		defer signal.Stop(signalCh)
 
 		go func() {
 			s := <-signalCh

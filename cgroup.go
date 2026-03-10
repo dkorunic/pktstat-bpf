@@ -41,7 +41,7 @@ const (
 )
 
 var (
-	cGroupCache     map[uint64]string
+	cGroupCache     = make(map[uint64]string)
 	cGroupCacheLock sync.RWMutex
 	cGroupInitOnce  sync.Once
 )
@@ -131,6 +131,8 @@ func cGroupWalk(dir string, mapping map[uint64]string) error {
 			if errors.Is(err, fs.ErrNotExist) {
 				return nil
 			}
+
+			return err
 		}
 
 		if !d.IsDir() {
@@ -181,9 +183,11 @@ func cGroupWatcher(objs cgroupObjects) (*perf.Reader, error) {
 	}
 
 	go func() {
-		var event cgroupCgroupevent
-
-		var r perf.Record
+		var (
+			event cgroupCgroupevent
+			r     perf.Record
+			err   error
+		)
 
 		for {
 			r, err = rd.Read()
@@ -201,6 +205,7 @@ func cGroupWatcher(objs cgroupObjects) (*perf.Reader, error) {
 			}
 
 			path := bsliceToString(event.Path[:])
+
 			cGroupCacheLock.Lock()
 			cGroupCache[event.Cgroupid] = strings.TrimPrefix(path, CGroupRootPath)
 			cGroupCacheLock.Unlock()

@@ -29,7 +29,10 @@ import (
 	"github.com/cilium/ebpf"
 )
 
-const batchSize = 4096
+const (
+	batchSize   = 4096
+	minDuration = 1e-9 // 1 nanosecond floor to avoid division by zero in bitrate
+)
 
 type batchBuffers struct {
 	keys   []counterStatkey
@@ -67,11 +70,7 @@ func checkBatchMapSupport(m *ebpf.Map) bool {
 	// BPF_MAP_LOOKUP_BATCH support requires v5.6 kernel
 	_, err := m.BatchLookup(&cursor, keys, values, nil)
 
-	if err != nil && errors.Is(err, ebpf.ErrNotSupported) {
-		return false
-	}
-
-	return true
+	return !errors.Is(err, ebpf.ErrNotSupported)
 }
 
 // listMap lists all the entries in the given ebpf.Map, converting the counter
@@ -112,6 +111,10 @@ func listMapBatch(m *ebpf.Map, start time.Time) ([]statEntry, error) {
 	values := buf.values
 
 	dur := time.Since(start).Seconds()
+	if dur < minDuration {
+		dur = minDuration
+	}
+
 	stats := make([]statEntry, 0, m.MaxEntries())
 
 	var cursor ebpf.MapBatchCursor
@@ -156,6 +159,10 @@ func listMapIterate(m *ebpf.Map, start time.Time) ([]statEntry, error) {
 	)
 
 	dur := time.Since(start).Seconds()
+	if dur < minDuration {
+		dur = minDuration
+	}
+
 	stats := make([]statEntry, 0, m.MaxEntries())
 
 	iter := m.Iterate()

@@ -67,6 +67,8 @@ func startKProbes(hooks []kprobeHook, links []link.Link) []link.Link {
 
 	links = slices.Grow(links, len(hooks))
 
+	initialLen := len(links)
+
 	for _, kp := range hooks {
 		l, err = link.Kprobe(kp.kprobe, kp.prog, nil)
 		if err != nil {
@@ -76,6 +78,10 @@ func startKProbes(hooks []kprobeHook, links []link.Link) []link.Link {
 		}
 
 		links = append(links, l)
+	}
+
+	if len(links) == initialLen {
+		log.Printf("Warning: no KProbes were successfully attached; output will be empty")
 	}
 
 	log.Printf("Using KProbes mode w/ PID/comm tracking")

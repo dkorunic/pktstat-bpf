@@ -25,6 +25,7 @@ package main
 import (
 	"fmt"
 	"strconv"
+	"sync/atomic"
 	"time"
 
 	"github.com/gdamore/tcell/v2"
@@ -54,9 +55,19 @@ const (
 // The TUI is interactive: pressing 'q' or 'x' will exit the program,
 // pressing 'r' or 'l' will redraw the TUI, and pressing any other key will
 // do nothing.
+// sortFuncs maps the atomic sort index to the corresponding sort function.
+var sortFuncs = [...]func([]statEntry){
+	bitrateSort, // 0
+	packetSort,  // 1
+	bytesSort,   // 2
+	srcIPSort,   // 3
+	dstIPSort,   // 4
+}
+
 func drawTUI(objs counterObjects, startTime time.Time) {
 	app := tview.NewApplication()
-	tableSort := bitrateSort
+
+	var tableSortIdx atomic.Int32 // 0 = bitrateSort (default)
 
 	// packet statistics
 	statsTable := tview.NewTable().
@@ -72,23 +83,23 @@ func drawTUI(objs counterObjects, startTime time.Time) {
 	statsTable.SetInputCapture(func(event *tcell.EventKey) *tcell.EventKey {
 		switch event.Rune() {
 		case '0':
-			tableSort = bitrateSort
+			tableSortIdx.Store(0)
 
 			statsTable.Select(0, 0)
 		case '1':
-			tableSort = packetSort
+			tableSortIdx.Store(1)
 
 			statsTable.Select(0, 0)
 		case '2':
-			tableSort = bytesSort
+			tableSortIdx.Store(2)
 
 			statsTable.Select(0, 0)
 		case '3':
-			tableSort = srcIPSort
+			tableSortIdx.Store(3)
 
 			statsTable.Select(0, 0)
 		case '4':
-			tableSort = dstIPSort
+			tableSortIdx.Store(4)
 
 			statsTable.Select(0, 0)
 		case 'q', 'x', 'Q', 'X':
@@ -131,12 +142,17 @@ func drawTUI(objs counterObjects, startTime time.Time) {
 		AddItem(statsTable, 1, 0, 1, 1, 0, 0, true).
 		AddItem(naviView, 2, 0, 1, 1, 0, 0, false)
 
-	// start the update loop
-	go updateStatsTable(app, statsTable, &tableSort, objs, startTime)
+	// start the update loop; done is closed when app.Run() returns so the
+	// goroutine can exit instead of blocking on a stopped application.
+	done := make(chan struct{})
+
+	go updateStatsTable(app, statsTable, &tableSortIdx, objs, startTime, done)
 
 	_ = app.SetRoot(grid, true).
 		SetFocus(statsTable).
 		Run()
+
+	close(done)
 }
 
 // updateStatsTable starts an infinite loop that updates the given table with
@@ -159,8 +175,8 @@ func drawTUI(objs counterObjects, startTime time.Time) {
 //
 // Note that the table is cleared and recreated on each iteration, so any cell
 // attributes are lost on each iteration.
-func updateStatsTable(app *tview.Application, table *tview.Table, tableSort *func(stats []statEntry),
-	objs counterObjects, startTime time.Time,
+func updateStatsTable(app *tview.Application, table *tview.Table, tableSortIdx *atomic.Int32,
+	objs counterObjects, startTime time.Time, done <-chan struct{},
 ) {
 	ticker := time.NewTicker(*refresh)
 	defer ticker.Stop()
@@ -186,7 +202,7 @@ func updateStatsTable(app *tview.Application, table *tview.Table, tableSort *fun
 
 	for {
 		// read eBPF map outside the draw closure so the UI goroutine is not blocked on the syscall
-		snapshot, _ := processMap(objs.PktCount, startTime, *tableSort)
+		snapshot, _ := processMap(objs.PktCount, startTime, sortFuncs[tableSortIdx.Load()])
 
 		app.QueueUpdateDraw(func() {
 			table.Clear()
@@ -273,6 +289,10 @@ func updateStatsTable(app *tview.Application, table *tview.Table, tableSort *fun
 			}
 		})
 
-		<-ticker.C
+		select {
+		case <-ticker.C:
+		case <-done:
+			return
+		}
 	}
 }
