@@ -382,7 +382,7 @@ xdp_process_packet(struct xdp_md *xdp) {
   void *data = (void *)(long)xdp->data;
   void *data_end = (void *)(long)xdp->data_end;
 
-  process_eth(data, data_end, data_end - data);
+  process_eth(data, data_end, bpf_xdp_get_buff_len(xdp));
 }
 
 /**
@@ -441,7 +441,7 @@ SEC("cgroup/sock_create")
 int cgroup_sock_create(struct bpf_sock *sk) {
   __u64 cookie = bpf_get_socket_cookie(sk);
   sockinfo ski = {
-      .pid = bpf_get_current_pid_tgid(),
+      .pid = bpf_get_current_pid_tgid() & 0xFFFFFFFF,
       .comm = {0},
   };
 
@@ -511,7 +511,7 @@ int cgroup_skb_egress(struct __sk_buff *skb) {
  *
  * @throws none
  */
-static inline __attribute__((always_inline)) void
+static inline __attribute__((always_inline)) bool
 process_tcp(bool receive, struct sock *sk, statkey *key, pid_t pid) {
   __u16 family = BPF_CORE_READ(sk, __sk_common.skc_family);
 
@@ -519,13 +519,13 @@ process_tcp(bool receive, struct sock *sk, statkey *key, pid_t pid) {
   case AF_INET: {
     // convert to V4MAPPED address
     __be32 ip4_src = BPF_CORE_READ(sk, __sk_common.skc_rcv_saddr);
-    key->srcip.s6_addr16[5] = bpf_htons(0xffff);
-    __builtin_memcpy(&key->srcip.s6_addr32[3], &ip4_src, sizeof(ip4_src));
+    __builtin_memcpy(key->srcip.s6_addr, ip4in6, sizeof(ip4in6));
+    __builtin_memcpy(key->srcip.s6_addr + sizeof(ip4in6), &ip4_src, sizeof(ip4_src));
 
     // convert to V4MAPPED address
     __be32 ip4_dst = BPF_CORE_READ(sk, __sk_common.skc_daddr);
-    key->dstip.s6_addr16[5] = bpf_htons(0xffff);
-    __builtin_memcpy(&key->dstip.s6_addr32[3], &ip4_dst, sizeof(ip4_dst));
+    __builtin_memcpy(key->dstip.s6_addr, ip4in6, sizeof(ip4in6));
+    __builtin_memcpy(key->dstip.s6_addr + sizeof(ip4in6), &ip4_dst, sizeof(ip4_dst));
 
     break;
   }
@@ -536,14 +536,14 @@ process_tcp(bool receive, struct sock *sk, statkey *key, pid_t pid) {
     break;
   }
   default: {
-    return;
+    return false;
   }
   }
 
   __u16 sport = BPF_CORE_READ(sk, __sk_common.skc_num);
   if (sport == 0) {
     struct inet_sock *isk = (struct inet_sock *)sk;
-    BPF_CORE_READ_INTO(&sport, isk, inet_sport);
+    sport = bpf_ntohs(BPF_CORE_READ(isk, inet_sport));
   }
   key->src_port = sport;
   key->dst_port = bpf_ntohs(BPF_CORE_READ(sk, __sk_common.skc_dport));
@@ -561,6 +561,8 @@ process_tcp(bool receive, struct sock *sk, statkey *key, pid_t pid) {
     key->src_port = key->dst_port;
     key->dst_port = tmp_port;
   }
+
+  return true;
 }
 
 /**
@@ -579,7 +581,7 @@ process_tcp(bool receive, struct sock *sk, statkey *key, pid_t pid) {
  *
  * @throws none
  */
-static inline __attribute__((always_inline)) void
+static inline __attribute__((always_inline)) bool
 process_udp_recv(bool receive, struct sk_buff *skb, statkey *key, pid_t pid) {
   struct udphdr *udphdr =
       (struct udphdr *)(BPF_CORE_READ(skb, head) +
@@ -594,13 +596,13 @@ process_udp_recv(bool receive, struct sk_buff *skb, statkey *key, pid_t pid) {
 
     // convert to V4MAPPED address
     __be32 ip4_src = BPF_CORE_READ(iphdr, saddr);
-    key->srcip.s6_addr16[5] = bpf_htons(0xffff);
-    __builtin_memcpy(&key->srcip.s6_addr32[3], &ip4_src, sizeof(ip4_src));
+    __builtin_memcpy(key->srcip.s6_addr, ip4in6, sizeof(ip4in6));
+    __builtin_memcpy(key->srcip.s6_addr + sizeof(ip4in6), &ip4_src, sizeof(ip4_src));
 
     // convert to V4MAPPED address
     __be32 ip4_dst = BPF_CORE_READ(iphdr, daddr);
-    key->dstip.s6_addr16[5] = bpf_htons(0xffff);
-    __builtin_memcpy(&key->dstip.s6_addr32[3], &ip4_dst, sizeof(ip4_dst));
+    __builtin_memcpy(key->dstip.s6_addr, ip4in6, sizeof(ip4in6));
+    __builtin_memcpy(key->dstip.s6_addr + sizeof(ip4in6), &ip4_dst, sizeof(ip4_dst));
     break;
   }
   case ETH_P_IPV6: {
@@ -614,7 +616,7 @@ process_udp_recv(bool receive, struct sk_buff *skb, statkey *key, pid_t pid) {
     break;
   }
   default:
-    return;
+    return false;
   }
 
   key->src_port = bpf_ntohs(BPF_CORE_READ(udphdr, source));
@@ -622,6 +624,19 @@ process_udp_recv(bool receive, struct sk_buff *skb, statkey *key, pid_t pid) {
 
   key->proto = IPPROTO_UDP;
   key->pid = pid;
+
+  /* we need to swap the source and destination IP addresses and ports */
+  if (receive) {
+    struct in6_addr tmp_ip = key->srcip;
+    key->srcip = key->dstip;
+    key->dstip = tmp_ip;
+
+    __u16 tmp_port = key->src_port;
+    key->src_port = key->dst_port;
+    key->dst_port = tmp_port;
+  }
+
+  return true;
 }
 
 /**
@@ -648,13 +663,13 @@ process_icmp4(struct sk_buff *skb, statkey *key, pid_t pid) {
 
   // convert to V4MAPPED address
   __be32 ip4_src = BPF_CORE_READ(iphdr, saddr);
-  key->srcip.s6_addr16[5] = bpf_htons(0xffff);
-  __builtin_memcpy(&key->srcip.s6_addr32[3], &ip4_src, sizeof(ip4_src));
+  __builtin_memcpy(key->srcip.s6_addr, ip4in6, sizeof(ip4in6));
+  __builtin_memcpy(key->srcip.s6_addr + sizeof(ip4in6), &ip4_src, sizeof(ip4_src));
 
   // convert to V4MAPPED address
   __be32 ip4_dst = BPF_CORE_READ(iphdr, daddr);
-  key->dstip.s6_addr16[5] = bpf_htons(0xffff);
-  __builtin_memcpy(&key->dstip.s6_addr32[3], &ip4_dst, sizeof(ip4_dst));
+  __builtin_memcpy(key->dstip.s6_addr, ip4in6, sizeof(ip4in6));
+  __builtin_memcpy(key->dstip.s6_addr + sizeof(ip4in6), &ip4_dst, sizeof(ip4_dst));
 
   // store ICMP type in src port
   key->src_port = BPF_CORE_READ(icmphdr, type);
@@ -664,8 +679,9 @@ process_icmp4(struct sk_buff *skb, statkey *key, pid_t pid) {
   key->proto = IPPROTO_ICMP;
   key->pid = pid;
 
-  size_t msglen = bpf_ntohs(BPF_CORE_READ(iphdr, tot_len)) -
-                  BPF_CORE_READ_BITFIELD_PROBED(iphdr, ihl) * 4;
+  __u16 tot_len = bpf_ntohs(BPF_CORE_READ(iphdr, tot_len));
+  __u16 ihl_bytes = (__u16)(BPF_CORE_READ_BITFIELD_PROBED(iphdr, ihl) * 4);
+  size_t msglen = (ihl_bytes <= tot_len) ? (tot_len - ihl_bytes) : 0;
 
   return msglen;
 }
@@ -735,8 +751,9 @@ process_udp_send(struct sk_buff *skb, statkey *key, pid_t pid) {
       (struct udphdr *)(BPF_CORE_READ(skb, head) +
                         BPF_CORE_READ(skb, transport_header));
 
-  process_udp_recv(false, skb, key, pid);
-  size_t msglen = BPF_CORE_READ(udphdr, len);
+  if (!process_udp_recv(false, skb, key, pid))
+    return 0;
+  size_t msglen = bpf_ntohs(BPF_CORE_READ(udphdr, len));
 
   return msglen;
 }
@@ -891,7 +908,8 @@ int BPF_KPROBE(tcp_sendmsg, struct sock *sk, struct msghdr *msg, size_t size) {
 
   key.cgroupid = bpf_get_current_cgroup_id();
 
-  process_tcp(false, sk, &key, pid);
+  if (!process_tcp(false, sk, &key, pid))
+    return 0;
   update_val(&key, size);
 
   return 0;
@@ -927,7 +945,8 @@ int BPF_KPROBE(tcp_cleanup_rbuf, struct sock *sk, int copied) {
 
   key.cgroupid = bpf_get_current_cgroup_id();
 
-  process_tcp(true, sk, &key, pid);
+  if (!process_tcp(true, sk, &key, pid))
+    return 0;
   update_val(&key, copied);
 
   return 0;
@@ -949,8 +968,9 @@ int BPF_KPROBE(tcp_cleanup_rbuf, struct sock *sk, int copied) {
  */
 SEC("kprobe/ip_send_skb")
 int BPF_KPROBE(ip_send_skb, struct net *net, struct sk_buff *skb) {
-  __u16 protocol = BPF_CORE_READ(skb, protocol);
-  if (protocol != IPPROTO_UDP) {
+  struct iphdr *iphdr = (struct iphdr *)(BPF_CORE_READ(skb, head) +
+                                         BPF_CORE_READ(skb, network_header));
+  if (BPF_CORE_READ(iphdr, protocol) != IPPROTO_UDP) {
     return 0;
   }
 
@@ -987,6 +1007,10 @@ int BPF_KPROBE(ip_send_skb, struct net *net, struct sk_buff *skb) {
  */
 SEC("kprobe/skb_consume_udp")
 int BPF_KPROBE(skb_consume_udp, struct sock *sk, struct sk_buff *skb, int len) {
+  if (len <= 0) {
+    return 0;
+  }
+
   statkey key;
   __builtin_memset(&key, 0, sizeof(key));
 
@@ -997,7 +1021,8 @@ int BPF_KPROBE(skb_consume_udp, struct sock *sk, struct sk_buff *skb, int len) {
 
   key.cgroupid = bpf_get_current_cgroup_id();
 
-  process_udp_recv(true, skb, &key, pid);
+  if (!process_udp_recv(true, skb, &key, pid))
+    return 0;
   update_val(&key, len);
 
   return 0;
@@ -1034,6 +1059,11 @@ int BPF_KPROBE(__icmp_send, struct sk_buff *skb, __u8 type, __u8 code,
   key.cgroupid = bpf_get_current_cgroup_id();
 
   size_t msglen = process_icmp4(skb, &key, pid);
+  /* __icmp_send is called with the triggering packet's skb; its
+   * transport_header points to that packet's transport layer (e.g. TCP/UDP),
+   * not to an ICMP header. Use the kprobe arguments directly for type/code. */
+  key.src_port = type;
+  key.dst_port = code;
   update_val(&key, msglen);
 
   return 0;

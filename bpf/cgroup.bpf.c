@@ -45,7 +45,7 @@ struct {
 struct {
   __uint(type,
          BPF_MAP_TYPE_PERF_EVENT_ARRAY); // perf event array requires 4.3 kernel
-  __uint(max_entries, MAX_ENTRIES);
+  __uint(max_entries, 0);
   __type(key, int);
   __type(value, __u32);
 } perf_cgroup_event SEC(".maps");

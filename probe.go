@@ -292,6 +292,10 @@ func startCGroupTrace(objs cgroupObjects, links []link.Link) []link.Link {
 		return links
 	}
 
+	if err != nil {
+		log.Fatalf("Error checking RawTracepoint support: %v", err)
+	}
+
 	l, err = link.AttachRawTracepoint(link.RawTracepointOptions{
 		Program: objs.TraceCgroupMkdir,
 		Name:    "cgroup_mkdir",

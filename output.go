@@ -96,7 +96,7 @@ func bytesSort(stats []statEntry) {
 	})
 }
 
-// srcIPSort sorts a slice of statEntry objects by their SrcIP field in descending order.
+// srcIPSort sorts a slice of statEntry objects by their SrcIP field in ascending order.
 //
 // Parameters:
 //
@@ -107,7 +107,7 @@ func srcIPSort(stats []statEntry) {
 	})
 }
 
-// dstIPSort sorts a slice of statEntry objects by their DstIP field in descending order.
+// dstIPSort sorts a slice of statEntry objects by their DstIP field in ascending order.
 //
 // Parameters:
 //

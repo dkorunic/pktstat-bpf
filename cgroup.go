@@ -31,6 +31,7 @@ import (
 	"strings"
 	"sync"
 	"syscall"
+	"time"
 
 	"github.com/cilium/ebpf/perf"
 )
@@ -196,6 +197,17 @@ func cGroupWatcher(objs cgroupObjects) (*perf.Reader, error) {
 				if errors.Is(err, perf.ErrClosed) {
 					return
 				}
+
+				// avoid tight-spinning on persistent errors
+				time.Sleep(10 * time.Millisecond)
+
+				continue
+			}
+
+			// Perf buffer overflowed: lost samples mean we may have missed
+			// cgroup mkdir events, so rebuild the cache from the filesystem.
+			if r.LostSamples > 0 {
+				cgroupCacheRefresh(CGroupRootPath)
 
 				continue
 			}
