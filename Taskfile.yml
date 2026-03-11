@@ -49,8 +49,8 @@ tasks:
 
   fmt-bpf:
     cmds:
-      - clang-format -i ./bpf/*
-      - gsed -i 's,[[:space:]]*go:build,go:build,g' ./bpf/*
+      - clang-format -i ./bpf/*.bpf.c
+      - gsed -i 's,[[:space:]]*go:build,go:build,g' ./bpf/*.bpf.c
 
   modernize:
     cmds:

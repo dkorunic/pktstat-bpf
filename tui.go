@@ -274,7 +274,12 @@ func updateStatsTable(app *tview.Application, table *tview.Table, tableSortIdx *
 
 				// populate pid, comm and cgroup
 				if *useKProbes || *useCGroup != "" {
-					table.SetCell(i+1, 8, tview.NewTableCell(strconv.FormatInt(int64(v.Pid), 10)).
+					pidStr := ""
+					if v.Pid > 0 {
+						pidStr = strconv.FormatInt(int64(v.Pid), 10)
+					}
+
+					table.SetCell(i+1, 8, tview.NewTableCell(pidStr).
 						SetTextColor(tcell.ColorWhite).
 						SetExpansion(1))
 

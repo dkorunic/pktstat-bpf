@@ -99,6 +99,7 @@ type counterProgramSpecs struct {
 	Icmp6Send        *ebpf.ProgramSpec `ebpf:"icmp6_send"`
 	IcmpRcv          *ebpf.ProgramSpec `ebpf:"icmp_rcv"`
 	Icmpv6Rcv        *ebpf.ProgramSpec `ebpf:"icmpv6_rcv"`
+	Ip6SendSkb       *ebpf.ProgramSpec `ebpf:"ip6_send_skb"`
 	IpSendSkb        *ebpf.ProgramSpec `ebpf:"ip_send_skb"`
 	SkbConsumeUdp    *ebpf.ProgramSpec `ebpf:"skb_consume_udp"`
 	TcCountPackets   *ebpf.ProgramSpec `ebpf:"tc_count_packets"`
@@ -169,6 +170,7 @@ type counterPrograms struct {
 	Icmp6Send        *ebpf.Program `ebpf:"icmp6_send"`
 	IcmpRcv          *ebpf.Program `ebpf:"icmp_rcv"`
 	Icmpv6Rcv        *ebpf.Program `ebpf:"icmpv6_rcv"`
+	Ip6SendSkb       *ebpf.Program `ebpf:"ip6_send_skb"`
 	IpSendSkb        *ebpf.Program `ebpf:"ip_send_skb"`
 	SkbConsumeUdp    *ebpf.Program `ebpf:"skb_consume_udp"`
 	TcCountPackets   *ebpf.Program `ebpf:"tc_count_packets"`
@@ -186,6 +188,7 @@ func (p *counterPrograms) Close() error {
 		p.Icmp6Send,
 		p.IcmpRcv,
 		p.Icmpv6Rcv,
+		p.Ip6SendSkb,
 		p.IpSendSkb,
 		p.SkbConsumeUdp,
 		p.TcCountPackets,

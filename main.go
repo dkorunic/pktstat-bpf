@@ -89,6 +89,25 @@ func main() {
 		}
 	}()
 
+	// Warn when multiple mutually-exclusive capture modes are combined.
+	// The switch below silently picks the first matching case, so the user
+	// might not realise one of their flags is being ignored.
+	{
+		captureModes := 0
+		if *useCGroup != "" {
+			captureModes++
+		}
+		if *useKProbes {
+			captureModes++
+		}
+		if *useXDP {
+			captureModes++
+		}
+		if captureModes > 1 {
+			log.Printf("Warning: multiple capture modes specified; precedence is --cgroup > --kprobes > --xdp > TC (default)")
+		}
+	}
+
 	switch {
 	case *useCGroup != "":
 		cGroupCacheInit()
@@ -110,6 +129,7 @@ func main() {
 			{kprobe: "tcp_sendmsg", prog: objsCounter.TcpSendmsg},
 			{kprobe: "tcp_cleanup_rbuf", prog: objsCounter.TcpCleanupRbuf},
 			{kprobe: "ip_send_skb", prog: objsCounter.IpSendSkb},
+			{kprobe: "ip6_send_skb", prog: objsCounter.Ip6SendSkb},
 			{kprobe: "skb_consume_udp", prog: objsCounter.SkbConsumeUdp},
 			{kprobe: "__icmp_send", prog: objsCounter.IcmpSend},
 			{kprobe: "icmp6_send", prog: objsCounter.Icmp6Send},
