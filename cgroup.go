@@ -25,6 +25,7 @@ import (
 	"encoding/binary"
 	"errors"
 	"io/fs"
+	"log"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -198,7 +199,8 @@ func cGroupWatcher(objs cgroupObjects) (*perf.Reader, error) {
 					return
 				}
 
-				// avoid tight-spinning on persistent errors
+				// log and avoid tight-spinning on persistent errors
+				log.Printf("cGroupWatcher: perf read error: %v", err)
 				time.Sleep(10 * time.Millisecond)
 
 				continue

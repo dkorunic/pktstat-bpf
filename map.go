@@ -132,7 +132,7 @@ func listMapBatch(m *ebpf.Map, start time.Time) ([]statEntry, error) {
 				break
 			}
 
-			return nil, err
+			return stats, err
 		}
 	}
 
