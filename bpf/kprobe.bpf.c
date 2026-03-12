@@ -33,7 +33,7 @@
 /**
  * Hook function for kprobe on tcp_sendmsg function.
  *
- * Populates the statkey structure with information from the UDP packet and
+ * Populates the statkey structure with information from the TCP packet and
  * the process ID associated with the packet, and updates the packet and byte
  * counters in the packet count map.
  *
@@ -396,6 +396,64 @@ int BPF_KPROBE(icmpv6_rcv, struct sk_buff *skb) {
   size_t msglen = process_icmp6(skb, &key, pid);
   if (msglen > 0)
     update_val(&key, msglen);
+
+  return 0;
+}
+
+/**
+ * Hook function for kprobe on raw_sendmsg function.
+ *
+ * Populates the statkey structure with information from the raw IPv4 packet and
+ * the process ID associated with the packet, and updates the packet and byte
+ * counters in the packet count map.
+ *
+ * @param sk pointer to the socket structure
+ * @param msg pointer to the msghdr structure
+ * @param len size of the message
+ *
+ * @return 0
+ *
+ * @throws none
+ */
+SEC("kprobe/raw_sendmsg")
+int BPF_KPROBE(raw_sendmsg, struct sock *sk, struct msghdr *msg, size_t len) {
+  statkey key;
+  __builtin_memset(&key, 0, sizeof(key));
+
+  pid_t pid = bpf_get_current_pid_tgid() & 0xFFFFFFFF;
+
+  if (!process_raw_sendmsg4(sk, msg, &key, pid))
+    return 0;
+  update_val(&key, len);
+
+  return 0;
+}
+
+/**
+ * Hook function for kprobe on rawv6_sendmsg function.
+ *
+ * Populates the statkey structure with information from the raw IPv6 packet and
+ * the process ID associated with the packet, and updates the packet and byte
+ * counters in the packet count map.
+ *
+ * @param sk pointer to the socket structure
+ * @param msg pointer to the msghdr structure
+ * @param len size of the message
+ *
+ * @return 0
+ *
+ * @throws none
+ */
+SEC("kprobe/rawv6_sendmsg")
+int BPF_KPROBE(rawv6_sendmsg, struct sock *sk, struct msghdr *msg, size_t len) {
+  statkey key;
+  __builtin_memset(&key, 0, sizeof(key));
+
+  pid_t pid = bpf_get_current_pid_tgid() & 0xFFFFFFFF;
+
+  if (!process_raw_sendmsg6(sk, msg, &key, pid))
+    return 0;
+  update_val(&key, len);
 
   return 0;
 }

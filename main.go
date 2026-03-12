@@ -169,6 +169,8 @@ func main() {
 			{kprobe: "icmp6_send", prog: objsKprobe.Icmp6Send},
 			{kprobe: "icmp_rcv", prog: objsKprobe.IcmpRcv},
 			{kprobe: "icmpv6_rcv", prog: objsKprobe.Icmpv6Rcv},
+			{kprobe: "raw_sendmsg", prog: objsKprobe.RawSendmsg},
+			{kprobe: "rawv6_sendmsg", prog: objsKprobe.Rawv6Sendmsg},
 		}
 
 		cGroupCacheInit()

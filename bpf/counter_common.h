@@ -738,3 +738,172 @@ static inline __attribute__((always_inline)) __u64 get_current_cgroup_id(void) {
 
   return get_cgroup_id(cgroup);
 }
+
+/**
+ * Process raw ICMP socket information for IPv4 and populate the key structure.
+ *
+ * @param sk pointer to the socket structure
+ * @param msg pointer to the message header structure containing the packet
+ * @param key pointer to the statkey structure to be populated
+ * @param pid process ID associated with the packet
+ *
+ * This function extracts source and destination IPv4 addresses and ICMP type
+ * and code from the raw socket message. It populates the provided statkey
+ * structure with these details, converting IPv4 addresses to IPv6-mapped
+ * format. The function only processes messages with the ICMP protocol.
+ *
+ * @return true if the key was successfully populated, false otherwise
+ *
+ * @throws none
+ */
+static inline __attribute__((always_inline)) bool
+process_raw_sendmsg4(struct sock *sk, struct msghdr *msg, statkey *key,
+                     pid_t pid) {
+  struct inet_sock *isk = (struct inet_sock *)sk;
+
+  // raw sockets have the protocol number in inet_num
+  __u16 proto = BPF_CORE_READ(isk, inet_num);
+  if (proto != IPPROTO_ICMP) {
+    return false;
+  }
+
+  // populate comm and cgroupid only after confirming this is an ICMP socket
+  if (pid > 0) {
+    bpf_get_current_comm(&key->comm, sizeof(key->comm));
+  }
+  key->cgroupid = get_current_cgroup_id();
+
+  // msg_name is NULL for connected raw sockets; drop if destination unknown
+  struct sockaddr_in *sin = (struct sockaddr_in *)BPF_CORE_READ(msg, msg_name);
+  if (!sin) {
+    return false;
+  }
+
+  // convert to V4MAPPED address
+  __be32 ip4_src = BPF_CORE_READ(isk, inet_saddr);
+  __builtin_memcpy(key->srcip.s6_addr, ip4in6, sizeof(ip4in6));
+  __builtin_memcpy(key->srcip.s6_addr + sizeof(ip4in6), &ip4_src,
+                   sizeof(ip4_src));
+
+  // convert to V4MAPPED address
+  __be32 ip4_dst = BPF_CORE_READ(sin, sin_addr.s_addr);
+  __builtin_memcpy(key->dstip.s6_addr, ip4in6, sizeof(ip4in6));
+  __builtin_memcpy(key->dstip.s6_addr + sizeof(ip4in6), &ip4_dst,
+                   sizeof(ip4_dst));
+
+  // iov_base is a user-space pointer; use bpf_probe_read_user to read it.
+  // On kernels >= 6.0, single-buffer sends use ITER_UBUF (iter_type == 0)
+  // where iov_base is stored directly in __ubuf_iovec. For ITER_IOVEC
+  // (iter_type == 1), __iov is a pointer to an iovec array that must be
+  // dereferenced first. Reading __iov when ITER_UBUF is active would
+  // misinterpret the data pointer as an iovec array pointer.
+  void *iov_base;
+  __u8 iter_type = BPF_CORE_READ(msg, msg_iter.iter_type);
+  if (iter_type == ITER_UBUF) {
+    iov_base = (void *)BPF_CORE_READ(msg, msg_iter.__ubuf_iovec.iov_base);
+  } else {
+    struct iovec *iov = (struct iovec *)BPF_CORE_READ(msg, msg_iter.__iov);
+    if (!iov) {
+      return false;
+    }
+    iov_base = (void *)BPF_CORE_READ(iov, iov_base);
+  }
+  if (!iov_base) {
+    return false;
+  }
+  struct icmphdr icmphdr;
+  if (bpf_probe_read_user(&icmphdr, sizeof(icmphdr), iov_base) != 0) {
+    return false;
+  }
+
+  // store ICMP type in src port
+  key->src_port = icmphdr.type;
+  // store ICMP code in dst port
+  key->dst_port = icmphdr.code;
+
+  key->proto = IPPROTO_ICMP;
+  key->pid = pid;
+
+  return true;
+}
+
+/**
+ * Process raw ICMP socket information for IPv6 and populate the key structure.
+ *
+ * @param sk pointer to the socket structure
+ * @param msg pointer to the message header structure containing the packet
+ * @param key pointer to the statkey structure to be populated
+ * @param pid process ID associated with the packet
+ *
+ * This function extracts source and destination IPv6 addresses and ICMPv6 type
+ * and code from the raw socket message. It populates the provided statkey
+ * structure with these details. The function only processes messages with the
+ * ICMPv6 protocol.
+ *
+ * @return true if the key was successfully populated, false otherwise
+ *
+ * @throws none
+ */
+static inline __attribute__((always_inline)) bool
+process_raw_sendmsg6(struct sock *sk, struct msghdr *msg, statkey *key,
+                     pid_t pid) {
+  struct inet_sock *isk = (struct inet_sock *)sk;
+
+  // raw sockets have the protocol number in inet_num
+  __u16 proto = BPF_CORE_READ(isk, inet_num);
+  if (proto != IPPROTO_ICMPV6) {
+    return false;
+  }
+
+  // populate comm and cgroupid only after confirming this is an ICMPv6 socket
+  if (pid > 0) {
+    bpf_get_current_comm(&key->comm, sizeof(key->comm));
+  }
+  key->cgroupid = get_current_cgroup_id();
+
+  // msg_name is NULL for connected raw sockets; drop if destination unknown
+  struct sockaddr_in6 *sin6 =
+      (struct sockaddr_in6 *)BPF_CORE_READ(msg, msg_name);
+  if (!sin6) {
+    return false;
+  }
+
+  // read the IPv6 local address from the correct socket field
+  BPF_CORE_READ_INTO(&key->srcip, sk, __sk_common.skc_v6_rcv_saddr);
+  BPF_CORE_READ_INTO(&key->dstip, sin6, sin6_addr);
+
+  // iov_base is a user-space pointer; use bpf_probe_read_user to read it.
+  // On kernels >= 6.0, single-buffer sends use ITER_UBUF (iter_type == 0)
+  // where iov_base is stored directly in __ubuf_iovec. For ITER_IOVEC
+  // (iter_type == 1), __iov is a pointer to an iovec array that must be
+  // dereferenced first. Reading __iov when ITER_UBUF is active would
+  // misinterpret the data pointer as an iovec array pointer.
+  void *iov_base;
+  __u8 iter_type = BPF_CORE_READ(msg, msg_iter.iter_type);
+  if (iter_type == ITER_UBUF) {
+    iov_base = (void *)BPF_CORE_READ(msg, msg_iter.__ubuf_iovec.iov_base);
+  } else {
+    struct iovec *iov = (struct iovec *)BPF_CORE_READ(msg, msg_iter.__iov);
+    if (!iov) {
+      return false;
+    }
+    iov_base = (void *)BPF_CORE_READ(iov, iov_base);
+  }
+  if (!iov_base) {
+    return false;
+  }
+  struct icmp6hdr icmp6hdr;
+  if (bpf_probe_read_user(&icmp6hdr, sizeof(icmp6hdr), iov_base) != 0) {
+    return false;
+  }
+
+  // store ICMP type in src port
+  key->src_port = icmp6hdr.icmp6_type;
+  // store ICMP code in dst port
+  key->dst_port = icmp6hdr.icmp6_code;
+
+  key->proto = IPPROTO_ICMPV6;
+  key->pid = pid;
+
+  return true;
+}
