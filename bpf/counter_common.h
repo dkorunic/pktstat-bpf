@@ -350,17 +350,7 @@ process_eth(void *data, void *data_end, __u64 pkt_len) {
     return;
   }
 
-  // lookup value in hash
-  statvalue *val = (statvalue *)bpf_map_lookup_elem(&pkt_count, &key);
-  if (val) {
-    // atomic XADD, doesn't need bpf_spin_lock()
-    __sync_fetch_and_add(&val->packets, 1);
-    __sync_fetch_and_add(&val->bytes, pkt_len);
-  } else {
-    statvalue initval = {.packets = 1, .bytes = pkt_len};
-
-    bpf_map_update_elem(&pkt_count, &key, &initval, BPF_NOEXIST);
-  }
+  update_val(&key, pkt_len);
 }
 
 /**

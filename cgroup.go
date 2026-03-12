@@ -74,22 +74,21 @@ func cGroupToPath(id uint64) string {
 		return p
 	}
 
-	// Upgrade to write lock; re-check to avoid redundant WalkDir from concurrent misses.
-	cGroupCacheLock.Lock()
-	defer cGroupCacheLock.Unlock()
+	// Build a fresh cache outside any lock to avoid blocking readers during
+	// the filesystem walk, then swap it in under a brief write lock.
+	fresh := make(map[uint64]string)
+	_ = cGroupWalk(CGroupRootPath, fresh)
 
-	if p, ok = cGroupCache[id]; ok {
-		return p
-	}
-
-	// ID genuinely absent: rebuild cache from filesystem.
-	_ = cGroupWalk(CGroupRootPath, cGroupCache)
-
-	// Create negative cache entry if still missing after walk.
-	if p, ok = cGroupCache[id]; !ok {
+	// Synthesise a negative cache entry if still missing after the walk.
+	p, ok = fresh[id]
+	if !ok {
 		p = "cgroup-id: " + strconv.FormatUint(id, 10)
-		cGroupCache[id] = p
+		fresh[id] = p
 	}
+
+	cGroupCacheLock.Lock()
+	cGroupCache = fresh
+	cGroupCacheLock.Unlock()
 
 	return p
 }
