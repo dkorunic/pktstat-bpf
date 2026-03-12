@@ -95,6 +95,7 @@ get_cgroupid(struct cgroup *cgrp) {
 
   return id;
 }
+
 /**
  * trace_cgroup_mkdir traces the creation of a new cgroup directory.
  *
