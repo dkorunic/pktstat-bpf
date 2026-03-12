@@ -40,13 +40,14 @@ import (
 
 // main is the entry point of the program.
 //
-// It loads the eBPF object files, removes resource limits for kernels <5.11,
-// and starts the appropriate packet capture method based on the flags passed.
+// It loads the appropriate eBPF object file on demand based on the selected
+// capture mode, removes resource limits for kernels <5.11, and attaches the
+// eBPF programs to the relevant hooks.
 //
 // The packet capture methods are:
 //
 //   - XDP (if *useXDP is set)
-//   - TC (if *useXDP is not set)
+//   - TC (if *useXDP is not set, default)
 //   - KProbes w/ PID tracking (if *useKProbes is set)
 //   - cgroup tracing (if *useCGroup is set)
 //
@@ -59,22 +60,6 @@ func main() {
 	if err := rlimit.RemoveMemlock(); err != nil {
 		log.Fatalf("Error removing memlock: %v", err)
 	}
-
-	// Load the compiled counter eBPF ELF and load it into the kernel
-	var objsCounter counterObjects
-	if err := loadCounterObjects(&objsCounter, nil); err != nil {
-		log.Fatalf("Error loading eBPF objects: %v", err)
-	}
-
-	defer func() { _ = objsCounter.Close() }()
-
-	// Load the compiled cgroup eBPF ELF and load it into the kernel
-	var objsCgroup cgroupObjects
-	if err := loadCgroupObjects(&objsCgroup, nil); err != nil {
-		log.Fatalf("Error loading eBPF objects: %v", err) //nolint:gocritic
-	}
-
-	defer func() { _ = objsCgroup.Close() }()
 
 	iface, err := net.InterfaceByName(*ifname)
 	if err != nil {
@@ -94,25 +79,51 @@ func main() {
 	// might not realise one of their flags is being ignored.
 	{
 		captureModes := 0
+
 		if *useCGroup != "" {
 			captureModes++
 		}
+
 		if *useKProbes {
 			captureModes++
 		}
+
 		if *useXDP {
 			captureModes++
 		}
+
 		if captureModes > 1 {
 			log.Printf("Warning: multiple capture modes specified; precedence is --cgroup > --kprobes > --xdp > TC (default)")
 		}
 	}
 
+	// pktCount is the eBPF map used to store packet statistics; it comes from
+	// whichever mode-specific object is loaded below.
+	var pktCount *ebpf.Map
+
 	switch {
 	case *useCGroup != "":
+		// Load CGroup SKB eBPF object (cgroup_sock_create + cgroup_skb hooks)
+		var objsCgroupSkb cgroupSkbObjects
+		if err := loadCgroupSkbObjects(&objsCgroupSkb, nil); err != nil {
+			log.Fatalf("Error loading CGroupSKB eBPF objects: %v", err) //nolint:gocritic
+		}
+
+		defer func() { _ = objsCgroupSkb.Close() }()
+
+		pktCount = objsCgroupSkb.PktCount
+
+		// Load the cgroup_mkdir tracepoint object for cgroup path tracking
+		var objsCgroup cgroupObjects
+		if err := loadCgroupObjects(&objsCgroup, nil); err != nil { //nolint:gocritic
+			log.Fatalf("Error loading cgroup eBPF objects: %v", err)
+		}
+
+		defer func() { _ = objsCgroup.Close() }()
+
 		cGroupCacheInit()
 
-		links = startCgroup(objsCounter, *useCGroup, links)
+		links = startCgroup(objsCgroupSkb, *useCGroup, links)
 		links = startCGroupTrace(objsCgroup, links)
 
 		rd, err := cGroupWatcher(objsCgroup)
@@ -121,21 +132,40 @@ func main() {
 		} else {
 			defer func() { _ = rd.Close() }()
 		}
+
 	// KProbes w/ PID tracking
 	case *useKProbes:
-		cGroupCacheInit()
+		// Load KProbe eBPF object
+		var objsKprobe kprobeObjects
+		if err := loadKprobeObjects(&objsKprobe, nil); err != nil {
+			log.Fatalf("Error loading KProbe eBPF objects: %v", err)
+		}
+
+		defer func() { _ = objsKprobe.Close() }()
+
+		pktCount = objsKprobe.PktCount
+
+		// Load the cgroup_mkdir tracepoint object for cgroup path tracking
+		var objsCgroup cgroupObjects
+		if err := loadCgroupObjects(&objsCgroup, nil); err != nil {
+			log.Fatalf("Error loading cgroup eBPF objects: %v", err)
+		}
+
+		defer func() { _ = objsCgroup.Close() }()
 
 		hooks := []kprobeHook{
-			{kprobe: "tcp_sendmsg", prog: objsCounter.TcpSendmsg},
-			{kprobe: "tcp_cleanup_rbuf", prog: objsCounter.TcpCleanupRbuf},
-			{kprobe: "ip_send_skb", prog: objsCounter.IpSendSkb},
-			{kprobe: "ip6_send_skb", prog: objsCounter.Ip6SendSkb},
-			{kprobe: "skb_consume_udp", prog: objsCounter.SkbConsumeUdp},
-			{kprobe: "__icmp_send", prog: objsCounter.IcmpSend},
-			{kprobe: "icmp6_send", prog: objsCounter.Icmp6Send},
-			{kprobe: "icmp_rcv", prog: objsCounter.IcmpRcv},
-			{kprobe: "icmpv6_rcv", prog: objsCounter.Icmpv6Rcv},
+			{kprobe: "tcp_sendmsg", prog: objsKprobe.TcpSendmsg},
+			{kprobe: "tcp_cleanup_rbuf", prog: objsKprobe.TcpCleanupRbuf},
+			{kprobe: "ip_send_skb", prog: objsKprobe.IpSendSkb},
+			{kprobe: "ip6_send_skb", prog: objsKprobe.Ip6SendSkb},
+			{kprobe: "skb_consume_udp", prog: objsKprobe.SkbConsumeUdp},
+			{kprobe: "__icmp_send", prog: objsKprobe.IcmpSend},
+			{kprobe: "icmp6_send", prog: objsKprobe.Icmp6Send},
+			{kprobe: "icmp_rcv", prog: objsKprobe.IcmpRcv},
+			{kprobe: "icmpv6_rcv", prog: objsKprobe.Icmpv6Rcv},
 		}
+
+		cGroupCacheInit()
 
 		links = startKProbes(hooks, links)
 		links = startCGroupTrace(objsCgroup, links)
@@ -146,12 +176,34 @@ func main() {
 		} else {
 			defer func() { _ = rd.Close() }()
 		}
+
 	// XDP
 	case *useXDP:
-		links = startXDP(objsCounter, iface, links)
-	// TC
+		// Load XDP eBPF object
+		var objsXDP xdpObjects
+		if err := loadXdpObjects(&objsXDP, nil); err != nil {
+			log.Fatalf("Error loading XDP eBPF objects: %v", err)
+		}
+
+		defer func() { _ = objsXDP.Close() }()
+
+		pktCount = objsXDP.PktCount
+
+		links = startXDP(objsXDP, iface, links)
+
+	// TC (default)
 	default:
-		links = startTC(objsCounter, iface, links)
+		// Load TC eBPF object
+		var objsTC tcObjects
+		if err := loadTcObjects(&objsTC, nil); err != nil {
+			log.Fatalf("Error loading TC eBPF objects: %v", err)
+		}
+
+		defer func() { _ = objsTC.Close() }()
+
+		pktCount = objsTC.PktCount
+
+		links = startTC(objsTC, iface, links)
 	}
 
 	c1, cancel := context.WithCancel(context.Background())
@@ -161,7 +213,7 @@ func main() {
 
 	//nolint:nestif
 	if *enableTUI {
-		drawTUI(objsCounter, startTime)
+		drawTUI(pktCount, startTime)
 	} else {
 		signalCh := make(chan os.Signal, 1)
 
@@ -188,7 +240,7 @@ func main() {
 
 		var m []statEntry
 
-		m, err = processMap(objsCounter.PktCount, startTime, bitrateSort)
+		m, err = processMap(pktCount, startTime, bitrateSort)
 		if err != nil {
 			// reads from BPF_MAP_TYPE_LRU_HASH maps might get interrupted
 			if errors.Is(err, ebpf.ErrIterationAborted) {

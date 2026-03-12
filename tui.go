@@ -28,6 +28,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/cilium/ebpf"
 	"github.com/gdamore/tcell/v2"
 	"github.com/rivo/tview"
 )
@@ -64,7 +65,7 @@ var sortFuncs = [...]func([]statEntry){
 	dstIPSort,   // 4
 }
 
-func drawTUI(objs counterObjects, startTime time.Time) {
+func drawTUI(pktCount *ebpf.Map, startTime time.Time) {
 	app := tview.NewApplication()
 
 	var tableSortIdx atomic.Int32 // 0 = bitrateSort (default)
@@ -146,7 +147,7 @@ func drawTUI(objs counterObjects, startTime time.Time) {
 	// goroutine can exit instead of blocking on a stopped application.
 	done := make(chan struct{})
 
-	go updateStatsTable(app, statsTable, &tableSortIdx, objs, startTime, done)
+	go updateStatsTable(app, statsTable, &tableSortIdx, pktCount, startTime, done)
 
 	_ = app.SetRoot(grid, true).
 		SetFocus(statsTable).
@@ -176,7 +177,7 @@ func drawTUI(objs counterObjects, startTime time.Time) {
 // Note that the table is cleared and recreated on each iteration, so any cell
 // attributes are lost on each iteration.
 func updateStatsTable(app *tview.Application, table *tview.Table, tableSortIdx *atomic.Int32,
-	objs counterObjects, startTime time.Time, done <-chan struct{},
+	pktCount *ebpf.Map, startTime time.Time, done <-chan struct{},
 ) {
 	ticker := time.NewTicker(*refresh)
 	defer ticker.Stop()
@@ -202,7 +203,7 @@ func updateStatsTable(app *tview.Application, table *tview.Table, tableSortIdx *
 
 	for {
 		// read eBPF map outside the draw closure so the UI goroutine is not blocked on the syscall
-		snapshot, _ := processMap(objs.PktCount, startTime, sortFuncs[tableSortIdx.Load()])
+		snapshot, _ := processMap(pktCount, startTime, sortFuncs[tableSortIdx.Load()])
 
 		app.QueueUpdateDraw(func() {
 			table.Clear()

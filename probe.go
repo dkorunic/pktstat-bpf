@@ -98,7 +98,7 @@ func startKProbes(hooks []kprobeHook, links []link.Link) []link.Link {
 //
 // Parameters:
 //
-//	objs counterObjects: Contains the eBPF programs, including the XDP program to be attached.
+//	objs xdpObjects: Contains the eBPF programs, including the XDP program to be attached.
 //	iface *net.Interface: The network interface to which the XDP program should be attached.
 //	links []link.Link: A slice of existing link.Link objects to which the newly attached XDP link
 //	                    will be appended.
@@ -106,7 +106,7 @@ func startKProbes(hooks []kprobeHook, links []link.Link) []link.Link {
 // Returns:
 //
 //	[]link.Link: The updated slice of link.Link objects, now including the newly attached XDP link.
-func startXDP(objs counterObjects, iface *net.Interface, links []link.Link) []link.Link {
+func startXDP(objs xdpObjects, iface *net.Interface, links []link.Link) []link.Link {
 	var l link.Link
 
 	err := features.HaveProgramType(ebpf.XDP)
@@ -146,8 +146,8 @@ func startXDP(objs counterObjects, iface *net.Interface, links []link.Link) []li
 //
 // Parameters:
 //
-//	objs counterObjects: Contains the eBPF programs, including the TC program to be
-//	                      attached.
+//	objs tcObjects: Contains the eBPF programs, including the TC program to be
+//	                attached.
 //	iface *net.Interface: The network interface to which the TC program should be
 //	                      attached.
 //	links []link.Link: A slice of existing link.Link objects to which the newly
@@ -157,7 +157,7 @@ func startXDP(objs counterObjects, iface *net.Interface, links []link.Link) []li
 //
 //	[]link.Link: The updated slice of link.Link objects, now including the newly
 //	             attached TC links.
-func startTC(objs counterObjects, iface *net.Interface, links []link.Link) []link.Link {
+func startTC(objs tcObjects, iface *net.Interface, links []link.Link) []link.Link {
 	var l link.Link
 
 	err := features.HaveProgramType(ebpf.SchedACT)
@@ -208,8 +208,8 @@ func startTC(objs counterObjects, iface *net.Interface, links []link.Link) []lin
 //
 // Parameters:
 //
-//	objs counterObjects: Contains the eBPF programs, including those for socket creation and
-//	                     ingress/egress packet handling.
+//	objs cgroupSkbObjects: Contains the eBPF programs, including those for socket creation and
+//	                       ingress/egress packet handling.
 //	cgroupPath string: The filesystem path to the target cgroup where the eBPF programs will be
 //	                   attached.
 //	links []link.Link: A slice of existing link.Link objects, to which the newly attached cgroup
@@ -219,7 +219,7 @@ func startTC(objs counterObjects, iface *net.Interface, links []link.Link) []lin
 //
 //	[]link.Link: The updated slice of link.Link objects, now including the newly attached cgroup
 //	             links.
-func startCgroup(objs counterObjects, cgroupPath string, links []link.Link) []link.Link {
+func startCgroup(objs cgroupSkbObjects, cgroupPath string, links []link.Link) []link.Link {
 	var l link.Link
 
 	err := features.HaveProgramType(ebpf.CGroupSKB)

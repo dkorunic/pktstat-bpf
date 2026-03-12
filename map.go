@@ -35,8 +35,8 @@ const (
 )
 
 type batchBuffers struct {
-	keys   []counterStatkey
-	values []counterStatvalue
+	keys   []tcStatkey
+	values []tcStatvalue
 }
 
 var (
@@ -46,8 +46,8 @@ var (
 	batchPool = sync.Pool{
 		New: func() any {
 			return &batchBuffers{
-				keys:   make([]counterStatkey, batchSize),
-				values: make([]counterStatvalue, batchSize),
+				keys:   make([]tcStatkey, batchSize),
+				values: make([]tcStatvalue, batchSize),
 			}
 		},
 	}
@@ -62,8 +62,8 @@ var (
 // value to test whether the operation is supported. If the map does not
 // support batch lookups, the function returns false. Otherwise, it returns true.
 func checkBatchMapSupport(m *ebpf.Map) bool {
-	keys := make([]counterStatkey, 1)
-	values := make([]counterStatvalue, 1)
+	keys := make([]tcStatkey, 1)
+	values := make([]tcStatvalue, 1)
 
 	var cursor ebpf.MapBatchCursor
 
@@ -154,8 +154,8 @@ func listMapBatch(m *ebpf.Map, start time.Time) ([]statEntry, error) {
 //   - error: an error if any occurred during map iteration, otherwise nil
 func listMapIterate(m *ebpf.Map, start time.Time) ([]statEntry, error) {
 	var (
-		key counterStatkey
-		val counterStatvalue
+		key tcStatkey
+		val tcStatvalue
 	)
 
 	dur := time.Since(start).Seconds()
@@ -175,7 +175,7 @@ func listMapIterate(m *ebpf.Map, start time.Time) ([]statEntry, error) {
 	return stats, iter.Err()
 }
 
-// addStats takes a slice of statEntry, a counterStatkey, a counterStatvalue,
+// addStats takes a slice of statEntry, a tcStatkey, a tcStatvalue,
 // and a duration in seconds, and appends a new statEntry to the slice using
 // the provided data. The function converts the key SrcIP and DstIP fields to
 // netip.Addr objects, and the Comm field to a string. It also calculates the
@@ -183,16 +183,16 @@ func listMapIterate(m *ebpf.Map, start time.Time) ([]statEntry, error) {
 //
 // Parameters:
 //   - stats []statEntry: the slice of statEntry objects to which the new entry is appended
-//   - key counterStatkey: the counterStatkey object containing the source and
+//   - key tcStatkey: the tcStatkey object containing the source and
 //     destination IP addresses, protocol, and ports, as well as the PID, Comm,
 //     and CGroup information
-//   - val counterStatvalue: the counterStatvalue object containing the packet
+//   - val tcStatvalue: the tcStatvalue object containing the packet
 //     and byte counters
 //   - dur float64: the duration in seconds
 //
 // Returns:
 //   - []statEntry: the updated slice of statEntry objects
-func addStats(stats []statEntry, key counterStatkey, val counterStatvalue, dur float64) []statEntry {
+func addStats(stats []statEntry, key tcStatkey, val tcStatvalue, dur float64) []statEntry {
 	stats = append(stats, statEntry{
 		SrcIP:   bytesToAddr(key.Srcip.In6U.U6Addr8),
 		DstIP:   bytesToAddr(key.Dstip.In6U.U6Addr8),
