@@ -23,11 +23,14 @@ Plain `go build` also works for the Go userland (pre-compiled eBPF objects are c
 pktstat-bpf is a Linux eBPF packet statistics tool. It has two layers:
 
 **eBPF layer (C, in `bpf/`):**
-- `bpf/counter.bpf.c` — packet/byte counting programs for TC (TCX ingress+egress), XDP (ingress only), KProbes (tcp/udp/icmp), and CGroup SKB hooks.
-- `bpf/cgroup.bpf.c` — raw tracepoint on `cgroup_mkdir` to push new CGroup path events to userspace via perf buffer.
+- `bpf/tc.bpf.c` — packet/byte counting via TC (TCX ingress+egress).
+- `bpf/xdp.bpf.c` — packet/byte counting via XDP (ingress only).
+- `bpf/kprobe.bpf.c` — per-process TCP/UDP/ICMP stats via KProbes with PID/CGroup tracking.
+- `bpf/cgroup_skb.bpf.c` — packet/byte counting via CGroup SKB hooks.
+- `bpf/cgroup.bpf.c` — raw tracepoint on `cgroup_mkdir` to push new CGroup path events to userspace via perf buffer; shared by both KProbes and CGroup modes.
 
 **Userland layer (Go, root package `main`):**
-- `gen.go` — `//go:generate` directives that invoke `bpf2go` to compile each `.bpf.c` for `amd64` and `arm64`, producing `counter_{x86,arm64}_bpfel.{go,o}` and `cgroup_{x86,arm64}_bpfel.{go,o}` (bpf2go maps `-target amd64` → `x86` in filenames).
+- `gen.go` — `//go:generate` directives that invoke `bpf2go` to compile each `.bpf.c` for `amd64` and `arm64`, producing `tc_`, `xdp_`, `kprobe_`, `cgroupskb_`, and `cgroup_` prefixed `*_{x86,arm64}_bpfel.{go,o}` files (bpf2go maps `-target amd64` → `x86` in filenames).
 - `main.go` — program entry: loads both eBPF objects, resolves interface, selects capture mode (TC / XDP / KProbes / CGroup), runs TUI or CLI loop.
 - `probe.go` — `startTC`, `startXDP`, `startKProbes`, `startCgroup`, `startCGroupTrace`: attach eBPF programs to hooks.
 - `map.go` — reads `PktCount` eBPF LRU hash map; prefers `BatchLookup` (kernel ≥5.6), falls back to iterator.
