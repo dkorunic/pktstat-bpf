@@ -24,6 +24,7 @@ package main
 import (
 	"encoding/binary"
 	"errors"
+	"fmt"
 	"io/fs"
 	"log"
 	"os"
@@ -38,8 +39,12 @@ import (
 )
 
 const (
-	CGroupRootPath  = "/sys/fs/cgroup"
-	PerfBufferPages = 16
+	CGroupRootPath        = "/sys/fs/cgroup"
+	CGroupRootPathUnified = "/sys/fs/cgroup/unified"
+	PerfBufferPages       = 16
+	Cgroup1FsMagic        = 0x27e0eb
+	Cgroup2FsMagic        = 0x63677270
+	TmpFsMagic            = 0x1021994
 )
 
 var (
@@ -151,7 +156,12 @@ func cGroupWalk(dir string, mapping map[uint64]string) error {
 			return err
 		}
 
-		mapping[i] = strings.TrimPrefix(path, CGroupRootPath)
+		p := strings.TrimPrefix(path, CGroupRootPath)
+		if p == "" {
+			p = "/"
+		}
+
+		mapping[i] = p
 
 		return nil
 	})
@@ -220,11 +230,54 @@ func cGroupWatcher(objs cgroupObjects) (*perf.Reader, error) {
 
 			path := bsliceToString(event.Path[:])
 
+			cgroupPath := strings.TrimPrefix(path, CGroupRootPath)
+			if cgroupPath == "" {
+				cgroupPath = "/"
+			}
+
 			cGroupCacheLock.Lock()
-			cGroupCache[event.Cgroupid] = strings.TrimPrefix(path, CGroupRootPath)
+			cGroupCache[event.Cgroupid] = cgroupPath
 			cGroupCacheLock.Unlock()
 		}
 	}()
 
 	return rd, nil
+}
+
+// getCgroupFsMagic returns the magic number of the cgroup filesystem.
+//
+// The function takes no arguments and returns the magic number of the cgroup filesystem as a uint32, and an error if any occurred during the retrieval of the magic number.
+//
+// The function is safe to call concurrently.
+//
+// The possible return values are Cgroup1FsMagic (0x27e0eb) and Cgroup2FsMagic (0x63677270).
+func getCgroupFsMagic() (uint64, error) {
+	var stat syscall.Statfs_t
+	if err := syscall.Statfs(CGroupRootPath, &stat); err != nil {
+		return 0, err
+	}
+
+	switch stat.Type {
+	case Cgroup1FsMagic:
+		log.Printf("Detected cgroup v1 (legacy mode)")
+
+		return Cgroup1FsMagic, nil // for legacy cgroups v1 we use cgroup v1 syscalls
+	case Cgroup2FsMagic:
+		log.Printf("Detected cgroup v2 (unified mode)")
+
+		return Cgroup2FsMagic, nil // for unified cgroups v2 we use cgroup v2 syscalls
+	case TmpFsMagic:
+		err := syscall.Statfs(CGroupRootPathUnified, &stat)
+		if err == nil && stat.Type == Cgroup2FsMagic {
+			log.Printf("Detected cgroup v1 and v2 in hybrid mode")
+
+			return Cgroup1FsMagic, nil // for hybrid systemd mode we use cgroup v1 syscalls
+		}
+
+		log.Printf("Detected cgroup v1 (legacy)")
+
+		return Cgroup1FsMagic, nil
+	}
+
+	return 0, fmt.Errorf("unknown cgroup magic type %v", stat.Type)
 }

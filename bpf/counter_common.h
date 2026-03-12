@@ -19,11 +19,14 @@
 // OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 // SOFTWARE.
 
+//go:build ignore
+
 #pragma once
 
+#include "cgroup.h"
 #include "counter.h"
 
-// Map key struct for IP traffic
+// Counter map key struct for IP traffic
 typedef struct statkey_t {
   struct in6_addr srcip;    // source IPv6 address
   struct in6_addr dstip;    // destination IPv6 address
@@ -35,13 +38,13 @@ typedef struct statkey_t {
   __u8 proto;               // transport protocol
 } statkey;
 
-// Map value struct with counters
+// Counter map value struct with counters
 typedef struct statvalue_t {
   __u64 packets; // packets ingress + egress
   __u64 bytes;   // bytes ingress + egress
 } statvalue;
 
-// Map definition
+// Counter map definition
 struct {
   __uint(type, BPF_MAP_TYPE_LRU_HASH); // LRU hash requires 4.10 kernel
   __uint(max_entries, MAX_ENTRIES);
@@ -49,10 +52,24 @@ struct {
   __type(value, statvalue);
 } pkt_count SEC(".maps");
 
+// Sockinfo struct
 typedef struct sockinfo_t {
   __u8 comm[TASK_COMM_LEN];
   pid_t pid;
 } sockinfo;
+
+// Configuration map value struct
+typedef struct counter_cfg_t {
+  __u64 cgrpfs_magic; // cgroupv1 or cgroupv2 fs magic
+} counter_cfg_value;
+
+// Configuration map definition
+struct {
+  __uint(type, BPF_MAP_TYPE_ARRAY);
+  __uint(max_entries, 1);
+  __type(key, __u32);
+  __type(value, counter_cfg_value);
+} counter_cfg SEC(".maps");
 
 // IPv4-mapped IPv6 address prefix (for V4MAPPED conversion)
 static const __u8 ip4in6[] = {0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0xff, 0xff};
@@ -271,7 +288,16 @@ static inline __attribute__((always_inline)) void update_val(statkey *key,
   } else {
     statvalue initval = {.packets = 1, .bytes = size};
 
-    bpf_map_update_elem(&pkt_count, key, &initval, BPF_NOEXIST);
+    // BPF_NOEXIST can race on multi-CPU: another CPU may insert the same key
+    // between our lookup and this insert. On failure, retry the lookup and
+    // increment atomically so the packet is not silently dropped.
+    if (bpf_map_update_elem(&pkt_count, key, &initval, BPF_NOEXIST) != 0) {
+      val = (statvalue *)bpf_map_lookup_elem(&pkt_count, key);
+      if (val) {
+        __sync_fetch_and_add(&val->packets, 1);
+        __sync_fetch_and_add(&val->bytes, size);
+      }
+    }
   }
 }
 
@@ -640,4 +666,85 @@ process_udp_send(struct sk_buff *skb, statkey *key, pid_t pid) {
   size_t msglen = bpf_ntohs(BPF_CORE_READ(udphdr, len));
 
   return msglen;
+}
+
+/**
+ * get_cgroupid - reads the cgroup ID from the given struct cgroup
+ *
+ * This function reads the cgroup ID from the given struct cgroup and returns
+ * it. The function works on kernels v4.10 and above.
+ *
+ * @cgrp: the struct cgroup to read the cgroup ID from
+ *
+ * Returns: the cgroup ID as an unsigned 64-bit integer
+ *
+ * get_cgroupid() comes from aquasecurity/tracee, license: Apache-2.0
+ */
+static inline __attribute__((always_inline)) __u64
+get_cgroup_id(struct cgroup *cgrp) {
+  struct kernfs_node *kn = BPF_CORE_READ(cgrp, kn);
+
+  if (kn == NULL)
+    return 0;
+
+  __u64 id; // was union kernfs_node_id before 5.5, can read it as u64 in both
+            // situations
+
+  if (bpf_core_type_exists(union kernfs_node_id)) {
+    struct kernfs_node___older_v55 *kn_old = (void *)kn;
+    struct kernfs_node___rh8 *kn_rh8 = (void *)kn;
+
+    if (bpf_core_field_exists(kn_rh8->id)) {
+      // RHEL8 has both types declared: union and u64:
+      //     kn->id
+      //     rh->rh_kabi_hidden_172->id
+      // pointing to the same data
+      bpf_core_read(&id, sizeof(__u64), &kn_rh8->id);
+      id = id & 0xffffffff; // XXX: u32 is required
+    } else {
+      // all other regular kernels below v5.5
+      bpf_core_read(&id, sizeof(__u64), &kn_old->id);
+      id = id & 0xffffffff; // XXX: u32 is required
+    }
+  } else {
+    // kernel v5.5 and above
+    bpf_core_read(&id, sizeof(__u64), &kn->id);
+  }
+
+  return id;
+}
+
+/**
+ * get_current_cgroup_id - get the current cgroup ID
+ *
+ * This function determines the current cgroup ID of the running process.
+ * It first checks if the cgroup v2 pseudo-filesystem is present and
+ * if so, calls the bpf_get_current_cgroup_id() helper function. If not,
+ * it reads the cgroup ID from the task_struct structure. It returns the
+ * cgroup ID as an unsigned 64-bit integer.
+ *
+ * @return the current cgroup ID as an unsigned 64-bit integer
+ */
+static inline __attribute__((always_inline)) __u64 get_current_cgroup_id(void) {
+  __u32 zero_key = 0;
+  __u64 cgrpfs_magic = 0;
+
+  counter_cfg_value *cfg =
+      (counter_cfg_value *)bpf_map_lookup_elem(&counter_cfg, &zero_key);
+  if (cfg) {
+    cgrpfs_magic = cfg->cgrpfs_magic;
+  }
+
+  // cgroup v2
+  if (bpf_core_enum_value_exists(enum bpf_func_id,
+                                 BPF_FUNC_get_current_cgroup_id) &&
+      cgrpfs_magic == CGROUP2_FSMAGIC) {
+    return bpf_get_current_cgroup_id();
+  }
+
+  // cgroup v1
+  struct task_struct *task = (struct task_struct *)bpf_get_current_task();
+  struct cgroup *cgroup = BPF_CORE_READ(task, cgroups, subsys[0], cgroup);
+
+  return get_cgroup_id(cgroup);
 }

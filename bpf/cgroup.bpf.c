@@ -28,7 +28,7 @@
 #include <bpf/bpf_helpers.h>
 #include <bpf/bpf_tracing.h>
 
-#include "cgroup.h"
+#include "counter_common.h"
 
 typedef struct cgroup_event_t {
   char path[PATH_MAX]; // cgroup path
@@ -51,52 +51,6 @@ struct {
 } perf_cgroup_event SEC(".maps");
 
 /**
- * get_cgroupid - reads the cgroup ID from the given struct cgroup
- *
- * This function reads the cgroup ID from the given struct cgroup and returns
- * it. The function works on kernels v4.10 and above.
- *
- * @cgrp: the struct cgroup to read the cgroup ID from
- *
- * Returns: the cgroup ID as an unsigned 64-bit integer
- *
- * get_cgroupid() comes from aquasecurity/tracee, license: Apache-2.0
- */
-static inline __attribute__((always_inline)) __u64
-get_cgroupid(struct cgroup *cgrp) {
-  struct kernfs_node *kn = BPF_CORE_READ(cgrp, kn);
-
-  if (kn == NULL)
-    return 0;
-
-  __u64 id; // was union kernfs_node_id before 5.5, can read it as u64 in both
-            // situations
-
-  if (bpf_core_type_exists(union kernfs_node_id)) {
-    struct kernfs_node___older_v55 *kn_old = (void *)kn;
-    struct kernfs_node___rh8 *kn_rh8 = (void *)kn;
-
-    if (bpf_core_field_exists(kn_rh8->id)) {
-      // RHEL8 has both types declared: union and u64:
-      //     kn->id
-      //     rh->rh_kabi_hidden_172->id
-      // pointing to the same data
-      bpf_core_read(&id, sizeof(__u64), &kn_rh8->id);
-      id = id & 0xffffffff; // XXX: u32 is required
-    } else {
-      // all other regular kernels below v5.5
-      bpf_core_read(&id, sizeof(__u64), &kn_old->id);
-      id = id & 0xffffffff; // XXX: u32 is required
-    }
-  } else {
-    // kernel v5.5 and above
-    bpf_core_read(&id, sizeof(__u64), &kn->id);
-  }
-
-  return id;
-}
-
-/**
  * trace_cgroup_mkdir traces the creation of a new cgroup directory.
  *
  * This function is attached to the raw tracepoint for cgroup_mkdir events.
@@ -116,7 +70,7 @@ int trace_cgroup_mkdir(struct bpf_raw_tracepoint_args *ctx) {
   struct cgroup *dst_cgrp = (struct cgroup *)ctx->args[0];
   char *path = (char *)ctx->args[1];
 
-  __u64 cgroupid = get_cgroupid(dst_cgrp);
+  __u64 cgroupid = get_cgroup_id(dst_cgrp);
   __u32 zero_key = 0;
 
   cgroupevent *val =

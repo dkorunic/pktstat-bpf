@@ -21,8 +21,11 @@
 
 //go:build ignore
 
-#define MAX_ENTRIES 1024
+#pragma once
+
 #define PATH_MAX 4096
+#define CGROUP_FSMAGIC 0x27e0eb    // cgroup v1
+#define CGROUP2_FSMAGIC 0x63677270 // cgroup v2
 
 union kernfs_node_id {
   struct {

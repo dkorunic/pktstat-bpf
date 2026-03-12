@@ -55,7 +55,7 @@ int BPF_KPROBE(tcp_sendmsg, struct sock *sk, struct msghdr *msg, size_t size) {
     bpf_get_current_comm(&key.comm, sizeof(key.comm));
   }
 
-  key.cgroupid = bpf_get_current_cgroup_id();
+  key.cgroupid = get_current_cgroup_id();
 
   if (!process_tcp(false, sk, &key, pid))
     return 0;
@@ -92,7 +92,7 @@ int BPF_KPROBE(tcp_cleanup_rbuf, struct sock *sk, int copied) {
     bpf_get_current_comm(&key.comm, sizeof(key.comm));
   }
 
-  key.cgroupid = bpf_get_current_cgroup_id();
+  key.cgroupid = get_current_cgroup_id();
 
   if (!process_tcp(true, sk, &key, pid))
     return 0;
@@ -131,7 +131,7 @@ int BPF_KPROBE(ip_send_skb, struct net *net, struct sk_buff *skb) {
     bpf_get_current_comm(&key.comm, sizeof(key.comm));
   }
 
-  key.cgroupid = bpf_get_current_cgroup_id();
+  key.cgroupid = get_current_cgroup_id();
 
   size_t msglen = process_udp_send(skb, &key, pid);
   if (msglen > 0)
@@ -171,7 +171,7 @@ int BPF_KPROBE(ip6_send_skb, struct sk_buff *skb) {
     bpf_get_current_comm(&key.comm, sizeof(key.comm));
   }
 
-  key.cgroupid = bpf_get_current_cgroup_id();
+  key.cgroupid = get_current_cgroup_id();
 
   size_t msglen = process_udp_send(skb, &key, pid);
   if (msglen > 0)
@@ -209,7 +209,7 @@ int BPF_KPROBE(skb_consume_udp, struct sock *sk, struct sk_buff *skb, int len) {
     bpf_get_current_comm(&key.comm, sizeof(key.comm));
   }
 
-  key.cgroupid = bpf_get_current_cgroup_id();
+  key.cgroupid = get_current_cgroup_id();
 
   if (!process_udp_recv(true, skb, &key, pid))
     return 0;
@@ -246,7 +246,7 @@ int BPF_KPROBE(__icmp_send, struct sk_buff *skb, __u8 type, __u8 code,
     bpf_get_current_comm(&key.comm, sizeof(key.comm));
   }
 
-  key.cgroupid = bpf_get_current_cgroup_id();
+  key.cgroupid = get_current_cgroup_id();
 
   /* process_icmp4 populates src/dst IPs from the triggering packet's IP
    * header; its returned msglen (triggering payload) is not used here. */
@@ -308,7 +308,7 @@ int BPF_KPROBE(icmp6_send, struct sk_buff *skb, __u8 type, __u8 code,
     bpf_get_current_comm(&key.comm, sizeof(key.comm));
   }
 
-  key.cgroupid = bpf_get_current_cgroup_id();
+  key.cgroupid = get_current_cgroup_id();
 
   /* process_icmp6 populates src/dst IPs from the triggering packet's IPv6
    * header; its returned msglen (triggering payload_len) is not used here. */
@@ -359,7 +359,7 @@ int BPF_KPROBE(icmp_rcv, struct sk_buff *skb) {
     bpf_get_current_comm(&key.comm, sizeof(key.comm));
   }
 
-  key.cgroupid = bpf_get_current_cgroup_id();
+  key.cgroupid = get_current_cgroup_id();
 
   size_t msglen = process_icmp4(skb, &key, pid);
   if (msglen > 0)
@@ -391,10 +391,11 @@ int BPF_KPROBE(icmpv6_rcv, struct sk_buff *skb) {
     bpf_get_current_comm(&key.comm, sizeof(key.comm));
   }
 
-  key.cgroupid = bpf_get_current_cgroup_id();
+  key.cgroupid = get_current_cgroup_id();
 
   size_t msglen = process_icmp6(skb, &key, pid);
-  update_val(&key, msglen);
+  if (msglen > 0)
+    update_val(&key, msglen);
 
   return 0;
 }

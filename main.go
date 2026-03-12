@@ -61,11 +61,6 @@ func main() {
 		log.Fatalf("Error removing memlock: %v", err)
 	}
 
-	iface, err := net.InterfaceByName(*ifname)
-	if err != nil {
-		log.Fatalf("Error getting interface %q: %v", *ifname, err)
-	}
-
 	var links []link.Link
 
 	defer func() {
@@ -101,6 +96,9 @@ func main() {
 	// whichever mode-specific object is loaded below.
 	var pktCount *ebpf.Map
 
+	// cfgMap is the eBPF map used to store configuration
+	var cfgMap *ebpf.Map
+
 	switch {
 	case *useCGroup != "":
 		// Load CGroup SKB eBPF object (cgroup_sock_create + cgroup_skb hooks)
@@ -112,6 +110,10 @@ func main() {
 		defer func() { _ = objsCgroupSkb.Close() }()
 
 		pktCount = objsCgroupSkb.PktCount
+
+		// Cgroup fs magic detection
+		cfgMap = objsCgroupSkb.CounterCfg
+		_ = setCfgValues(cfgMap)
 
 		// Load the cgroup_mkdir tracepoint object for cgroup path tracking
 		var objsCgroup cgroupObjects
@@ -144,6 +146,10 @@ func main() {
 		defer func() { _ = objsKprobe.Close() }()
 
 		pktCount = objsKprobe.PktCount
+
+		// Cgroup fs magic detection
+		cfgMap = objsKprobe.CounterCfg
+		_ = setCfgValues(cfgMap)
 
 		// Load the cgroup_mkdir tracepoint object for cgroup path tracking
 		var objsCgroup cgroupObjects
@@ -179,6 +185,11 @@ func main() {
 
 	// XDP
 	case *useXDP:
+		iface, err := net.InterfaceByName(*ifname)
+		if err != nil {
+			log.Fatalf("Error getting interface %q: %v", *ifname, err)
+		}
+
 		// Load XDP eBPF object
 		var objsXDP xdpObjects
 		if err := loadXdpObjects(&objsXDP, nil); err != nil {
@@ -193,6 +204,11 @@ func main() {
 
 	// TC (default)
 	default:
+		iface, err := net.InterfaceByName(*ifname)
+		if err != nil {
+			log.Fatalf("Error getting interface %q: %v", *ifname, err)
+		}
+
 		// Load TC eBPF object
 		var objsTC tcObjects
 		if err := loadTcObjects(&objsTC, nil); err != nil {
@@ -238,9 +254,7 @@ func main() {
 
 		<-c1.Done()
 
-		var m []statEntry
-
-		m, err = processMap(pktCount, startTime, bitrateSort)
+		m, err := processMap(pktCount, startTime, bitrateSort)
 		if err != nil {
 			// reads from BPF_MAP_TYPE_LRU_HASH maps might get interrupted
 			if errors.Is(err, ebpf.ErrIterationAborted) {
@@ -256,4 +270,33 @@ func main() {
 			fmt.Print(outputPlain(m))
 		}
 	}
+}
+
+// setCfgValues sets the configuration values in the given eBPF map.
+//
+// It retrieves the cgroup filesystem magic number and sets it in the map.
+// The configuration values are used to determine how to extract cgroup
+// information from the packet data.
+func setCfgValues(m *ebpf.Map) error {
+	cgroupFsMagic, err := getCgroupFsMagic()
+	if err != nil {
+		log.Printf("Unable to identify cgroup fs magic: %v", err)
+
+		return err
+	}
+
+	v := &cfgValue{
+		CgrpfsMagic: cgroupFsMagic,
+	}
+
+	k := &cfgKey{Key: 0}
+
+	err = m.Update(k, v, ebpf.UpdateAny)
+	if err != nil {
+		log.Printf("Unable to set configuration values: %v", err)
+
+		return err
+	}
+
+	return nil
 }

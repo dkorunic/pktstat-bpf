@@ -13,6 +13,11 @@ import (
 	"github.com/cilium/ebpf"
 )
 
+type xdpCounterCfgValue struct {
+	_           structs.HostLayout
+	CgrpfsMagic uint64
+}
+
 type xdpStatkey struct {
 	_     structs.HostLayout
 	Srcip struct {
@@ -93,7 +98,8 @@ type xdpProgramSpecs struct {
 //
 // It can be passed ebpf.CollectionSpec.Assign.
 type xdpMapSpecs struct {
-	PktCount *ebpf.MapSpec `ebpf:"pkt_count"`
+	CounterCfg *ebpf.MapSpec `ebpf:"counter_cfg"`
+	PktCount   *ebpf.MapSpec `ebpf:"pkt_count"`
 }
 
 // xdpVariableSpecs contains global variables before they are loaded into the kernel.
@@ -122,11 +128,13 @@ func (o *xdpObjects) Close() error {
 //
 // It can be passed to loadXdpObjects or ebpf.CollectionSpec.LoadAndAssign.
 type xdpMaps struct {
-	PktCount *ebpf.Map `ebpf:"pkt_count"`
+	CounterCfg *ebpf.Map `ebpf:"counter_cfg"`
+	PktCount   *ebpf.Map `ebpf:"pkt_count"`
 }
 
 func (m *xdpMaps) Close() error {
 	return _XdpClose(
+		m.CounterCfg,
 		m.PktCount,
 	)
 }

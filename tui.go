@@ -205,6 +205,13 @@ func updateStatsTable(app *tview.Application, table *tview.Table, tableSortIdx *
 		// read eBPF map outside the draw closure so the UI goroutine is not blocked on the syscall
 		snapshot, _ := processMap(pktCount, startTime, sortFuncs[tableSortIdx.Load()])
 
+		// exit before queuing a draw if the app was stopped while processMap ran
+		select {
+		case <-done:
+			return
+		default:
+		}
+
 		app.QueueUpdateDraw(func() {
 			table.Clear()
 

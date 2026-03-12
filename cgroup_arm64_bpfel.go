@@ -19,6 +19,42 @@ type cgroupCgroupevent struct {
 	Cgroupid uint64
 }
 
+type cgroupCounterCfgValue struct {
+	_           structs.HostLayout
+	CgrpfsMagic uint64
+}
+
+type cgroupStatkey struct {
+	_     structs.HostLayout
+	Srcip struct {
+		_    structs.HostLayout
+		In6U struct {
+			_       structs.HostLayout
+			U6Addr8 [16]uint8
+		}
+	}
+	Dstip struct {
+		_    structs.HostLayout
+		In6U struct {
+			_       structs.HostLayout
+			U6Addr8 [16]uint8
+		}
+	}
+	Cgroupid uint64
+	Comm     [16]int8
+	Pid      int32
+	SrcPort  uint16
+	DstPort  uint16
+	Proto    uint8
+	_        [7]byte
+}
+
+type cgroupStatvalue struct {
+	_       structs.HostLayout
+	Packets uint64
+	Bytes   uint64
+}
+
 // loadCgroup returns the embedded CollectionSpec for cgroup.
 func loadCgroup() (*ebpf.CollectionSpec, error) {
 	reader := bytes.NewReader(_CgroupBytes)
@@ -69,7 +105,9 @@ type cgroupProgramSpecs struct {
 // It can be passed ebpf.CollectionSpec.Assign.
 type cgroupMapSpecs struct {
 	CgroupEvent     *ebpf.MapSpec `ebpf:"cgroup_event"`
+	CounterCfg      *ebpf.MapSpec `ebpf:"counter_cfg"`
 	PerfCgroupEvent *ebpf.MapSpec `ebpf:"perf_cgroup_event"`
+	PktCount        *ebpf.MapSpec `ebpf:"pkt_count"`
 }
 
 // cgroupVariableSpecs contains global variables before they are loaded into the kernel.
@@ -99,13 +137,17 @@ func (o *cgroupObjects) Close() error {
 // It can be passed to loadCgroupObjects or ebpf.CollectionSpec.LoadAndAssign.
 type cgroupMaps struct {
 	CgroupEvent     *ebpf.Map `ebpf:"cgroup_event"`
+	CounterCfg      *ebpf.Map `ebpf:"counter_cfg"`
 	PerfCgroupEvent *ebpf.Map `ebpf:"perf_cgroup_event"`
+	PktCount        *ebpf.Map `ebpf:"pkt_count"`
 }
 
 func (m *cgroupMaps) Close() error {
 	return _CgroupClose(
 		m.CgroupEvent,
+		m.CounterCfg,
 		m.PerfCgroupEvent,
+		m.PktCount,
 	)
 }
 

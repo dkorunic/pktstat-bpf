@@ -13,6 +13,11 @@ import (
 	"github.com/cilium/ebpf"
 )
 
+type cgroupSkbCounterCfgValue struct {
+	_           structs.HostLayout
+	CgrpfsMagic uint64
+}
+
 type cgroupSkbSockinfo struct {
 	_    structs.HostLayout
 	Comm [16]uint8
@@ -101,8 +106,9 @@ type cgroupSkbProgramSpecs struct {
 //
 // It can be passed ebpf.CollectionSpec.Assign.
 type cgroupSkbMapSpecs struct {
-	PktCount *ebpf.MapSpec `ebpf:"pkt_count"`
-	SockInfo *ebpf.MapSpec `ebpf:"sock_info"`
+	CounterCfg *ebpf.MapSpec `ebpf:"counter_cfg"`
+	PktCount   *ebpf.MapSpec `ebpf:"pkt_count"`
+	SockInfo   *ebpf.MapSpec `ebpf:"sock_info"`
 }
 
 // cgroupSkbVariableSpecs contains global variables before they are loaded into the kernel.
@@ -131,12 +137,14 @@ func (o *cgroupSkbObjects) Close() error {
 //
 // It can be passed to loadCgroupSkbObjects or ebpf.CollectionSpec.LoadAndAssign.
 type cgroupSkbMaps struct {
-	PktCount *ebpf.Map `ebpf:"pkt_count"`
-	SockInfo *ebpf.Map `ebpf:"sock_info"`
+	CounterCfg *ebpf.Map `ebpf:"counter_cfg"`
+	PktCount   *ebpf.Map `ebpf:"pkt_count"`
+	SockInfo   *ebpf.Map `ebpf:"sock_info"`
 }
 
 func (m *cgroupSkbMaps) Close() error {
 	return _CgroupSkbClose(
+		m.CounterCfg,
 		m.PktCount,
 		m.SockInfo,
 	)

@@ -94,7 +94,7 @@ process_cgroup_skb(struct __sk_buff *skb) {
     __builtin_memcpy(key.comm, ski->comm, sizeof(key.comm));
   }
 
-  key.cgroupid = bpf_get_current_cgroup_id();
+  key.cgroupid = get_current_cgroup_id();
 
   statvalue *val = (statvalue *)bpf_map_lookup_elem(&pkt_count, &key);
   if (val) {
@@ -104,7 +104,16 @@ process_cgroup_skb(struct __sk_buff *skb) {
   } else {
     statvalue initval = {.packets = 1, .bytes = pkt_len};
 
-    bpf_map_update_elem(&pkt_count, &key, &initval, BPF_NOEXIST);
+    // BPF_NOEXIST can race on multi-CPU: another CPU may insert the same key
+    // between our lookup and this insert. On failure, retry the lookup and
+    // increment atomically so the packet is not silently dropped.
+    if (bpf_map_update_elem(&pkt_count, &key, &initval, BPF_NOEXIST) != 0) {
+      val = (statvalue *)bpf_map_lookup_elem(&pkt_count, &key);
+      if (val) {
+        __sync_fetch_and_add(&val->packets, 1);
+        __sync_fetch_and_add(&val->bytes, pkt_len);
+      }
+    }
   }
 }
 
