@@ -97,8 +97,6 @@ type kprobeProgramSpecs struct {
 	Icmpv6Rcv      *ebpf.ProgramSpec `ebpf:"icmpv6_rcv"`
 	Ip6SendSkb     *ebpf.ProgramSpec `ebpf:"ip6_send_skb"`
 	IpSendSkb      *ebpf.ProgramSpec `ebpf:"ip_send_skb"`
-	RawSendmsg     *ebpf.ProgramSpec `ebpf:"raw_sendmsg"`
-	Rawv6Sendmsg   *ebpf.ProgramSpec `ebpf:"rawv6_sendmsg"`
 	SkbConsumeUdp  *ebpf.ProgramSpec `ebpf:"skb_consume_udp"`
 	TcpCleanupRbuf *ebpf.ProgramSpec `ebpf:"tcp_cleanup_rbuf"`
 	TcpSendmsg     *ebpf.ProgramSpec `ebpf:"tcp_sendmsg"`
@@ -165,8 +163,6 @@ type kprobePrograms struct {
 	Icmpv6Rcv      *ebpf.Program `ebpf:"icmpv6_rcv"`
 	Ip6SendSkb     *ebpf.Program `ebpf:"ip6_send_skb"`
 	IpSendSkb      *ebpf.Program `ebpf:"ip_send_skb"`
-	RawSendmsg     *ebpf.Program `ebpf:"raw_sendmsg"`
-	Rawv6Sendmsg   *ebpf.Program `ebpf:"rawv6_sendmsg"`
 	SkbConsumeUdp  *ebpf.Program `ebpf:"skb_consume_udp"`
 	TcpCleanupRbuf *ebpf.Program `ebpf:"tcp_cleanup_rbuf"`
 	TcpSendmsg     *ebpf.Program `ebpf:"tcp_sendmsg"`
@@ -180,8 +176,6 @@ func (p *kprobePrograms) Close() error {
 		p.Icmpv6Rcv,
 		p.Ip6SendSkb,
 		p.IpSendSkb,
-		p.RawSendmsg,
-		p.Rawv6Sendmsg,
 		p.SkbConsumeUdp,
 		p.TcpCleanupRbuf,
 		p.TcpSendmsg,
