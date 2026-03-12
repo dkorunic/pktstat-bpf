@@ -27,6 +27,7 @@ import (
 	"fmt"
 	"io/fs"
 	"log"
+	"maps"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -50,6 +51,7 @@ const (
 var (
 	cGroupCache     = make(map[uint64]string)
 	cGroupCacheLock sync.RWMutex
+	cGroupRebuildMu sync.Mutex // serialises filesystem walks to avoid thundering herd
 	cGroupInitOnce  sync.Once
 )
 
@@ -74,8 +76,24 @@ func cGroupToPath(id uint64) string {
 		return p
 	}
 
-	// Build a fresh cache outside any lock to avoid blocking readers during
-	// the filesystem walk, then swap it in under a brief write lock.
+	// Serialise filesystem walks: only one goroutine rebuilds at a time.
+	// This prevents the thundering-herd where N concurrent misses each do a
+	// full walk and the last writer discards everyone else's results.
+	cGroupRebuildMu.Lock()
+	defer cGroupRebuildMu.Unlock()
+
+	// Re-check after acquiring the rebuild lock; a concurrent goroutine may
+	// have already walked and populated the entry while we were waiting.
+	cGroupCacheLock.RLock()
+	p, ok = cGroupCache[id]
+	cGroupCacheLock.RUnlock()
+
+	if ok {
+		return p
+	}
+
+	// Build a fresh mapping outside any lock to avoid blocking readers during
+	// the filesystem walk.
 	fresh := make(map[uint64]string)
 	_ = cGroupWalk(CGroupRootPath, fresh)
 
@@ -86,8 +104,11 @@ func cGroupToPath(id uint64) string {
 		fresh[id] = p
 	}
 
+	// Merge fresh entries into the existing cache rather than replacing it,
+	// so that entries written by cGroupWatcher between the walk start and now
+	// are preserved.
 	cGroupCacheLock.Lock()
-	cGroupCache = fresh
+	maps.Copy(cGroupCache, fresh)
 	cGroupCacheLock.Unlock()
 
 	return p
@@ -100,7 +121,9 @@ func cGroupToPath(id uint64) string {
 // The function is safe to call concurrently.
 func cGroupCacheInit() {
 	cGroupInitOnce.Do(func() {
+		cGroupCacheLock.Lock()
 		cGroupCache = make(map[uint64]string)
+		cGroupCacheLock.Unlock()
 
 		// initial cache refresh
 		cgroupCacheRefresh(CGroupRootPath)
@@ -110,17 +133,21 @@ func cGroupCacheInit() {
 // cgroupCacheRefresh refreshes the cache with the current cgroup paths.
 //
 // It walks the cgroup filesystem from the given directory and builds a new
-// mapping outside of any lock. The global cache is then replaced atomically
-// under a brief write lock, so concurrent readers are not blocked for the
-// duration of the filesystem walk.
+// mapping outside of any lock. The fresh entries are then merged into the
+// existing cache under a brief write lock, preserving any entries that
+// cGroupWatcher wrote concurrently. cGroupRebuildMu is held for the duration
+// so that concurrent callers do not each trigger a redundant walk.
 //
 // The function is safe to call concurrently.
 func cgroupCacheRefresh(dir string) {
+	cGroupRebuildMu.Lock()
+	defer cGroupRebuildMu.Unlock()
+
 	fresh := make(map[uint64]string)
 	_ = cGroupWalk(dir, fresh)
 
 	cGroupCacheLock.Lock()
-	cGroupCache = fresh
+	maps.Copy(cGroupCache, fresh)
 	cGroupCacheLock.Unlock()
 }
 

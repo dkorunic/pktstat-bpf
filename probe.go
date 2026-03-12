@@ -81,7 +81,7 @@ func startKProbes(hooks []kprobeHook, links []link.Link) []link.Link {
 	}
 
 	if len(links) == initialLen {
-		log.Printf("Warning: no KProbes were successfully attached; output will be empty")
+		log.Fatal("Error attaching KProbes: no KProbes were successfully attached")
 	}
 
 	log.Printf("Using KProbes mode w/ PID/comm tracking")
