@@ -56,8 +56,8 @@ const (
 // Returns:
 //   - []statEntry: the sorted statEntry slice
 //   - error: an error if any occurred during map iteration, otherwise nil
-func processMap(m *ebpf.Map, start time.Time, sortFunc func([]statEntry)) ([]statEntry, error) {
-	stats, err := listMap(m, start)
+func processMap(m *ebpf.Map, start time.Time, sortFunc func([]statEntry), buf []statEntry) ([]statEntry, error) {
+	stats, err := listMap(m, start, buf)
 	sortFunc(stats)
 
 	return stats, err
@@ -226,11 +226,17 @@ func outputPlain(m []statEntry) string {
 // Returns:
 //
 //	string - the JSON string representation of m
-func outputJSON(m []statEntry) {
+// jsonEncoder is a package-level encoder pre-configured for stdout, created once
+// to avoid a per-call allocation in outputJSON.
+var jsonEncoder = func() *json.Encoder {
 	enc := json.NewEncoder(os.Stdout)
 	enc.SetEscapeHTML(false)
 
-	if err := enc.Encode(m); err != nil {
+	return enc
+}()
+
+func outputJSON(m []statEntry) {
+	if err := jsonEncoder.Encode(m); err != nil {
 		_, _ = fmt.Fprintf(os.Stderr, "Error encoding JSON output: %v\n", err)
 	}
 }

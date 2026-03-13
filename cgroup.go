@@ -86,6 +86,7 @@ func cGroupToPath(id uint64) string {
 	// have already walked and populated the entry while we were waiting.
 	cGroupCacheLock.RLock()
 	p, ok = cGroupCache[id]
+	hint := len(cGroupCache)
 	cGroupCacheLock.RUnlock()
 
 	if ok {
@@ -93,8 +94,9 @@ func cGroupToPath(id uint64) string {
 	}
 
 	// Build a fresh mapping outside any lock to avoid blocking readers during
-	// the filesystem walk.
-	fresh := make(map[uint64]string)
+	// the filesystem walk. Pre-size with the current cache length as a hint to
+	// reduce rehashing when the map grows to a similar size.
+	fresh := make(map[uint64]string, hint)
 	_ = cGroupWalk(CGroupRootPath, fresh)
 
 	// Synthesise a negative cache entry if still missing after the walk.
@@ -143,7 +145,11 @@ func cgroupCacheRefresh(dir string) {
 	cGroupRebuildMu.Lock()
 	defer cGroupRebuildMu.Unlock()
 
-	fresh := make(map[uint64]string)
+	cGroupCacheLock.RLock()
+	hint := len(cGroupCache)
+	cGroupCacheLock.RUnlock()
+
+	fresh := make(map[uint64]string, hint)
 	_ = cGroupWalk(dir, fresh)
 
 	cGroupCacheLock.Lock()

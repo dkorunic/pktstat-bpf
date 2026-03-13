@@ -201,9 +201,22 @@ func updateStatsTable(app *tview.Application, table *tview.Table, tableSortIdx *
 		headers = headers[:8]
 	}
 
+	// Hoist mode check out of the inner row loop: these flags are immutable after startup.
+	showProcInfo := *useKProbes || *useCGroup != ""
+
+	// Double-buffer the stats slice to avoid per-tick allocations in steady state.
+	// statsBufs[bufIdx] is passed as a reuse hint to processMap; the (possibly grown)
+	// slice is stored back after each call. bufIdx advances before the draw is queued,
+	// so the slot handed to processMap next tick is from two ticks ago — well after
+	// its draw has completed (draws finish in <100 ms; tick interval is ≥1 s).
+	var statsBufs [2][]statEntry
+	bufIdx := 0
+
 	for {
 		// read eBPF map outside the draw closure so the UI goroutine is not blocked on the syscall
-		snapshot, _ := processMap(pktCount, startTime, sortFuncs[tableSortIdx.Load()])
+		snapshot, _ := processMap(pktCount, startTime, sortFuncs[tableSortIdx.Load()], statsBufs[bufIdx])
+		statsBufs[bufIdx] = snapshot
+		bufIdx ^= 1
 
 		// exit before queuing a draw if the app was stopped while processMap ran
 		select {
@@ -225,6 +238,10 @@ func updateStatsTable(app *tview.Application, table *tview.Table, tableSortIdx *
 					Attributes:      tcell.AttrBold,
 				})
 			}
+
+			// addrBuf is reused across rows to build addr:port strings without
+			// intermediate string allocations; it lives for this draw call only.
+			var addrBuf []byte
 
 			for i, v := range snapshot {
 				// populate bitrate, packets, bytes and proto
@@ -263,11 +280,17 @@ func updateStatsTable(app *tview.Application, table *tview.Table, tableSortIdx *
 						SetTextColor(tcell.ColorWhite).
 						SetExpansion(1))
 				default:
-					table.SetCell(i+1, 4, tview.NewTableCell(v.SrcIP.String()+":"+strconv.Itoa(int(v.SrcPort))).
+					addrBuf = v.SrcIP.AppendTo(addrBuf[:0])
+					addrBuf = append(addrBuf, ':')
+					addrBuf = strconv.AppendUint(addrBuf, uint64(v.SrcPort), 10)
+					table.SetCell(i+1, 4, tview.NewTableCell(string(addrBuf)).
 						SetTextColor(tcell.ColorWhite).
 						SetExpansion(1))
 
-					table.SetCell(i+1, 5, tview.NewTableCell(v.DstIP.String()+":"+strconv.Itoa(int(v.DstPort))).
+					addrBuf = v.DstIP.AppendTo(addrBuf[:0])
+					addrBuf = append(addrBuf, ':')
+					addrBuf = strconv.AppendUint(addrBuf, uint64(v.DstPort), 10)
+					table.SetCell(i+1, 5, tview.NewTableCell(string(addrBuf)).
 						SetTextColor(tcell.ColorWhite).
 						SetExpansion(1))
 
@@ -281,7 +304,7 @@ func updateStatsTable(app *tview.Application, table *tview.Table, tableSortIdx *
 				}
 
 				// populate pid, comm and cgroup
-				if *useKProbes || *useCGroup != "" {
+				if showProcInfo {
 					pidStr := ""
 					if v.Pid > 0 {
 						pidStr = strconv.FormatInt(int64(v.Pid), 10)

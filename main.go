@@ -256,7 +256,7 @@ func main() {
 
 		<-c1.Done()
 
-		m, err := processMap(pktCount, startTime, bitrateSort)
+		m, err := processMap(pktCount, startTime, bitrateSort, nil)
 		if err != nil {
 			// reads from BPF_MAP_TYPE_LRU_HASH maps might get interrupted
 			if errors.Is(err, ebpf.ErrIterationAborted) {

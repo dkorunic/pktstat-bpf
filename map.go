@@ -41,6 +41,7 @@ type batchBuffers struct {
 
 var (
 	haveBatchMapSupport      bool
+	mapMaxEntries            uint32
 	checkBatchMapSupportOnce sync.Once
 
 	batchPool = sync.Pool{
@@ -82,17 +83,18 @@ func checkBatchMapSupport(m *ebpf.Map) bool {
 // optimized listMapBatch or listMapIterate functions accordingly.
 //
 // listMap is safe to call concurrently.
-func listMap(m *ebpf.Map, start time.Time) ([]statEntry, error) {
+func listMap(m *ebpf.Map, start time.Time, buf []statEntry) ([]statEntry, error) {
 	checkBatchMapSupportOnce.Do(func() {
 		haveBatchMapSupport = checkBatchMapSupport(m)
+		mapMaxEntries = m.MaxEntries()
 	})
 
 	if haveBatchMapSupport {
-		return listMapBatch(m, start)
+		return listMapBatch(m, start, buf)
 	}
 
 	// fallback to regular eBPF map iteration which might get interrupted for BPF_MAP_TYPE_LRU_HASH
-	return listMapIterate(m, start)
+	return listMapIterate(m, start, buf)
 }
 
 // listMapBatch lists all the entries in the given ebpf.Map, converting the
@@ -103,19 +105,24 @@ func listMap(m *ebpf.Map, start time.Time) ([]statEntry, error) {
 // The function is safe to call concurrently.
 //
 // listMapBatch is used by listMap when the map supports batch lookups.
-func listMapBatch(m *ebpf.Map, start time.Time) ([]statEntry, error) {
-	buf := batchPool.Get().(*batchBuffers)
-	defer batchPool.Put(buf)
+func listMapBatch(m *ebpf.Map, start time.Time, buf []statEntry) ([]statEntry, error) {
+	batch := batchPool.Get().(*batchBuffers)
+	defer batchPool.Put(batch)
 
-	keys := buf.keys
-	values := buf.values
+	keys := batch.keys
+	values := batch.values
 
 	dur := time.Since(start).Seconds()
 	if dur < minDuration {
 		dur = minDuration
 	}
 
-	stats := make([]statEntry, 0, m.MaxEntries())
+	var stats []statEntry
+	if buf != nil {
+		stats = buf[:0]
+	} else {
+		stats = make([]statEntry, 0, mapMaxEntries)
+	}
 
 	var cursor ebpf.MapBatchCursor
 
@@ -152,7 +159,7 @@ func listMapBatch(m *ebpf.Map, start time.Time) ([]statEntry, error) {
 // Returns:
 //   - []statEntry: a slice of statEntry objects containing the converted map entries
 //   - error: an error if any occurred during map iteration, otherwise nil
-func listMapIterate(m *ebpf.Map, start time.Time) ([]statEntry, error) {
+func listMapIterate(m *ebpf.Map, start time.Time, buf []statEntry) ([]statEntry, error) {
 	var (
 		key tcStatkey
 		val tcStatvalue
@@ -163,7 +170,12 @@ func listMapIterate(m *ebpf.Map, start time.Time) ([]statEntry, error) {
 		dur = minDuration
 	}
 
-	stats := make([]statEntry, 0, m.MaxEntries())
+	var stats []statEntry
+	if buf != nil {
+		stats = buf[:0]
+	} else {
+		stats = make([]statEntry, 0, mapMaxEntries)
+	}
 
 	iter := m.Iterate()
 
