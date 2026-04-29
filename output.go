@@ -226,6 +226,7 @@ func outputPlain(m []statEntry) string {
 // Returns:
 //
 //	string - the JSON string representation of m
+//
 // jsonEncoder is a package-level encoder pre-configured for stdout, created once
 // to avoid a per-call allocation in outputJSON.
 var jsonEncoder = func() *json.Encoder {
