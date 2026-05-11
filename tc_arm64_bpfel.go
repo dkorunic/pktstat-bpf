@@ -13,11 +13,6 @@ import (
 	"github.com/cilium/ebpf"
 )
 
-type tcCounterCfgValue struct {
-	_           structs.HostLayout
-	CgrpfsMagic uint64
-}
-
 type tcStatkey struct {
 	_     structs.HostLayout
 	Srcip struct {
@@ -98,8 +93,7 @@ type tcProgramSpecs struct {
 //
 // It can be passed ebpf.CollectionSpec.Assign.
 type tcMapSpecs struct {
-	CounterCfg *ebpf.MapSpec `ebpf:"counter_cfg"`
-	PktCount   *ebpf.MapSpec `ebpf:"pkt_count"`
+	PktCount *ebpf.MapSpec `ebpf:"pkt_count"`
 }
 
 // tcVariableSpecs contains global variables before they are loaded into the kernel.
@@ -128,13 +122,11 @@ func (o *tcObjects) Close() error {
 //
 // It can be passed to loadTcObjects or ebpf.CollectionSpec.LoadAndAssign.
 type tcMaps struct {
-	CounterCfg *ebpf.Map `ebpf:"counter_cfg"`
-	PktCount   *ebpf.Map `ebpf:"pkt_count"`
+	PktCount *ebpf.Map `ebpf:"pkt_count"`
 }
 
 func (m *tcMaps) Close() error {
 	return _TcClose(
-		m.CounterCfg,
 		m.PktCount,
 	)
 }

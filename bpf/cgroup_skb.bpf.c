@@ -64,7 +64,7 @@ process_cgroup_skb(struct __sk_buff *skb) {
   // v2: skb-derived helper (cheap, correct in softirq). v1: task-walk
   // fallback. Branch is folded at load time via cgrpfs_magic.
   if (cgrpfs_magic == CGROUP2_FSMAGIC) {
-    key.cgroupid = bpf_skb_cgroup_id(skb, 0);
+    key.cgroupid = bpf_skb_cgroup_id(skb);
   } else {
     key.cgroupid = get_current_cgroup_id_v1();
   }

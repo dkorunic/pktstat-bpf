@@ -26,10 +26,7 @@
 #include "cgroup.h"
 #include "counter.h"
 
-// Packed: drops 7 bytes of tail padding, shrinking 72 → 65. Saves hashed
-// bytes per lookup and nCPU × 7 bytes per entry under LRU_PERCPU_HASH.
-// All interior fields stay naturally aligned within the first 65 bytes.
-typedef struct __attribute__((packed)) statkey_t {
+typedef struct statkey_t {
   struct in6_addr srcip;
   struct in6_addr dstip;
   __u64 cgroupid;
@@ -481,8 +478,6 @@ static inline __attribute__((always_inline)) __u64 get_current_cgroup_id(void) {
   return get_current_cgroup_id_v1();
 }
 
-#endif // PKTSTAT_NEEDS_CGROUP_HELPERS
-
 static inline __attribute__((always_inline)) bool
 process_raw_sendmsg4(struct sock *sk, struct msghdr *msg, statkey *key,
                      pid_t pid) {
@@ -603,3 +598,5 @@ process_raw_sendmsg6(struct sock *sk, struct msghdr *msg, statkey *key,
 
   return true;
 }
+
+#endif // PKTSTAT_NEEDS_CGROUP_HELPERS

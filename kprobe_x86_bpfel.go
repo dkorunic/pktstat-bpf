@@ -13,11 +13,6 @@ import (
 	"github.com/cilium/ebpf"
 )
 
-type kprobeCounterCfgValue struct {
-	_           structs.HostLayout
-	CgrpfsMagic uint64
-}
-
 type kprobeStatkey struct {
 	_     structs.HostLayout
 	Srcip struct {
@@ -106,14 +101,14 @@ type kprobeProgramSpecs struct {
 //
 // It can be passed ebpf.CollectionSpec.Assign.
 type kprobeMapSpecs struct {
-	CounterCfg *ebpf.MapSpec `ebpf:"counter_cfg"`
-	PktCount   *ebpf.MapSpec `ebpf:"pkt_count"`
+	PktCount *ebpf.MapSpec `ebpf:"pkt_count"`
 }
 
 // kprobeVariableSpecs contains global variables before they are loaded into the kernel.
 //
 // It can be passed ebpf.CollectionSpec.Assign.
 type kprobeVariableSpecs struct {
+	CgrpfsMagic *ebpf.VariableSpec `ebpf:"cgrpfs_magic"`
 }
 
 // kprobeObjects contains all objects after they have been loaded into the kernel.
@@ -136,13 +131,11 @@ func (o *kprobeObjects) Close() error {
 //
 // It can be passed to loadKprobeObjects or ebpf.CollectionSpec.LoadAndAssign.
 type kprobeMaps struct {
-	CounterCfg *ebpf.Map `ebpf:"counter_cfg"`
-	PktCount   *ebpf.Map `ebpf:"pkt_count"`
+	PktCount *ebpf.Map `ebpf:"pkt_count"`
 }
 
 func (m *kprobeMaps) Close() error {
 	return _KprobeClose(
-		m.CounterCfg,
 		m.PktCount,
 	)
 }
@@ -151,6 +144,7 @@ func (m *kprobeMaps) Close() error {
 //
 // It can be passed to loadKprobeObjects or ebpf.CollectionSpec.LoadAndAssign.
 type kprobeVariables struct {
+	CgrpfsMagic *ebpf.Variable `ebpf:"cgrpfs_magic"`
 }
 
 // kprobePrograms contains all programs after they have been loaded into the kernel.

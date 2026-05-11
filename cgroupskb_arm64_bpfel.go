@@ -13,11 +13,6 @@ import (
 	"github.com/cilium/ebpf"
 )
 
-type cgroupSkbCounterCfgValue struct {
-	_           structs.HostLayout
-	CgrpfsMagic uint64
-}
-
 type cgroupSkbSockinfo struct {
 	_    structs.HostLayout
 	Comm [16]uint8
@@ -97,24 +92,25 @@ type cgroupSkbSpecs struct {
 //
 // It can be passed ebpf.CollectionSpec.Assign.
 type cgroupSkbProgramSpecs struct {
-	CgroupSkbEgress  *ebpf.ProgramSpec `ebpf:"cgroup_skb_egress"`
-	CgroupSkbIngress *ebpf.ProgramSpec `ebpf:"cgroup_skb_ingress"`
-	CgroupSockCreate *ebpf.ProgramSpec `ebpf:"cgroup_sock_create"`
+	CgroupSkbEgress   *ebpf.ProgramSpec `ebpf:"cgroup_skb_egress"`
+	CgroupSkbIngress  *ebpf.ProgramSpec `ebpf:"cgroup_skb_ingress"`
+	CgroupSockCreate  *ebpf.ProgramSpec `ebpf:"cgroup_sock_create"`
+	CgroupSockRelease *ebpf.ProgramSpec `ebpf:"cgroup_sock_release"`
 }
 
 // cgroupSkbMapSpecs contains maps before they are loaded into the kernel.
 //
 // It can be passed ebpf.CollectionSpec.Assign.
 type cgroupSkbMapSpecs struct {
-	CounterCfg *ebpf.MapSpec `ebpf:"counter_cfg"`
-	PktCount   *ebpf.MapSpec `ebpf:"pkt_count"`
-	SockInfo   *ebpf.MapSpec `ebpf:"sock_info"`
+	PktCount *ebpf.MapSpec `ebpf:"pkt_count"`
+	SockInfo *ebpf.MapSpec `ebpf:"sock_info"`
 }
 
 // cgroupSkbVariableSpecs contains global variables before they are loaded into the kernel.
 //
 // It can be passed ebpf.CollectionSpec.Assign.
 type cgroupSkbVariableSpecs struct {
+	CgrpfsMagic *ebpf.VariableSpec `ebpf:"cgrpfs_magic"`
 }
 
 // cgroupSkbObjects contains all objects after they have been loaded into the kernel.
@@ -137,14 +133,12 @@ func (o *cgroupSkbObjects) Close() error {
 //
 // It can be passed to loadCgroupSkbObjects or ebpf.CollectionSpec.LoadAndAssign.
 type cgroupSkbMaps struct {
-	CounterCfg *ebpf.Map `ebpf:"counter_cfg"`
-	PktCount   *ebpf.Map `ebpf:"pkt_count"`
-	SockInfo   *ebpf.Map `ebpf:"sock_info"`
+	PktCount *ebpf.Map `ebpf:"pkt_count"`
+	SockInfo *ebpf.Map `ebpf:"sock_info"`
 }
 
 func (m *cgroupSkbMaps) Close() error {
 	return _CgroupSkbClose(
-		m.CounterCfg,
 		m.PktCount,
 		m.SockInfo,
 	)
@@ -154,15 +148,17 @@ func (m *cgroupSkbMaps) Close() error {
 //
 // It can be passed to loadCgroupSkbObjects or ebpf.CollectionSpec.LoadAndAssign.
 type cgroupSkbVariables struct {
+	CgrpfsMagic *ebpf.Variable `ebpf:"cgrpfs_magic"`
 }
 
 // cgroupSkbPrograms contains all programs after they have been loaded into the kernel.
 //
 // It can be passed to loadCgroupSkbObjects or ebpf.CollectionSpec.LoadAndAssign.
 type cgroupSkbPrograms struct {
-	CgroupSkbEgress  *ebpf.Program `ebpf:"cgroup_skb_egress"`
-	CgroupSkbIngress *ebpf.Program `ebpf:"cgroup_skb_ingress"`
-	CgroupSockCreate *ebpf.Program `ebpf:"cgroup_sock_create"`
+	CgroupSkbEgress   *ebpf.Program `ebpf:"cgroup_skb_egress"`
+	CgroupSkbIngress  *ebpf.Program `ebpf:"cgroup_skb_ingress"`
+	CgroupSockCreate  *ebpf.Program `ebpf:"cgroup_sock_create"`
+	CgroupSockRelease *ebpf.Program `ebpf:"cgroup_sock_release"`
 }
 
 func (p *cgroupSkbPrograms) Close() error {
@@ -170,6 +166,7 @@ func (p *cgroupSkbPrograms) Close() error {
 		p.CgroupSkbEgress,
 		p.CgroupSkbIngress,
 		p.CgroupSockCreate,
+		p.CgroupSockRelease,
 	)
 }
 
