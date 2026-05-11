@@ -42,17 +42,26 @@ type batchBuffers struct {
 var (
 	haveBatchMapSupport      bool
 	mapMaxEntries            uint32
+	possibleCPUs             int
 	checkBatchMapSupportOnce sync.Once
 
-	batchPool = sync.Pool{
-		New: func() any {
-			return &batchBuffers{
-				keys:   make([]tcStatkey, batchSize),
-				values: make([]tcStatvalue, batchSize),
-			}
-		},
-	}
+	batchPool sync.Pool
 )
+
+// sumPerCPUValue collapses a per-CPU statvalue vector into a single
+// aggregate. The pkt_count map is BPF_MAP_TYPE_LRU_PERCPU_HASH, so every
+// lookup returns one slot per possible CPU and we add them together for the
+// userspace view.
+func sumPerCPUValue(perCPU []tcStatvalue) tcStatvalue {
+	var sum tcStatvalue
+
+	for i := range perCPU {
+		sum.Packets += perCPU[i].Packets
+		sum.Bytes += perCPU[i].Bytes
+	}
+
+	return sum
+}
 
 // checkBatchMapSupport checks whether the given ebpf.Map supports batch lookups.
 //
@@ -60,11 +69,12 @@ var (
 // flag. This flag is only supported on Linux v5.6 and above.
 //
 // The function performs a batch lookup on the map with a single dummy key and
-// value to test whether the operation is supported. If the map does not
-// support batch lookups, the function returns false. Otherwise, it returns true.
+// per-CPU value buffer to test whether the operation is supported. If the
+// map does not support batch lookups, the function returns false. Otherwise,
+// it returns true.
 func checkBatchMapSupport(m *ebpf.Map) bool {
 	keys := make([]tcStatkey, 1)
-	values := make([]tcStatvalue, 1)
+	values := make([]tcStatvalue, possibleCPUs) // flat: 1 key × possibleCPUs
 
 	var cursor ebpf.MapBatchCursor
 
@@ -85,6 +95,23 @@ func checkBatchMapSupport(m *ebpf.Map) bool {
 // listMap is safe to call concurrently.
 func listMap(m *ebpf.Map, start time.Time, buf []statEntry) ([]statEntry, error) {
 	checkBatchMapSupportOnce.Do(func() {
+		// PossibleCPU must be resolved before allocating per-CPU value
+		// buffers; it depends on a one-time procfs read inside cilium/ebpf.
+		cpus, err := ebpf.PossibleCPU()
+		if err != nil || cpus < 1 {
+			cpus = 1
+		}
+		possibleCPUs = cpus
+
+		batchPool = sync.Pool{
+			New: func() any {
+				return &batchBuffers{
+					keys:   make([]tcStatkey, batchSize),
+					values: make([]tcStatvalue, batchSize*possibleCPUs),
+				}
+			},
+		}
+
 		haveBatchMapSupport = checkBatchMapSupport(m)
 		mapMaxEntries = m.MaxEntries()
 	})
@@ -93,7 +120,7 @@ func listMap(m *ebpf.Map, start time.Time, buf []statEntry) ([]statEntry, error)
 		return listMapBatch(m, start, buf)
 	}
 
-	// fallback to regular eBPF map iteration which might get interrupted for BPF_MAP_TYPE_LRU_HASH
+	// fallback to regular eBPF map iteration which might get interrupted for BPF_MAP_TYPE_LRU_PERCPU_HASH
 	return listMapIterate(m, start, buf)
 }
 
@@ -110,7 +137,7 @@ func listMapBatch(m *ebpf.Map, start time.Time, buf []statEntry) ([]statEntry, e
 	defer batchPool.Put(batch)
 
 	keys := batch.keys
-	values := batch.values
+	values := batch.values // flat: batchSize × possibleCPUs
 
 	dur := time.Since(start).Seconds()
 	if dur < minDuration {
@@ -126,12 +153,16 @@ func listMapBatch(m *ebpf.Map, start time.Time, buf []statEntry) ([]statEntry, e
 
 	var cursor ebpf.MapBatchCursor
 
-	// BPF_MAP_LOOKUP_BATCH support requires v5.6 kernel
+	// BPF_MAP_LOOKUP_BATCH support requires v5.6 kernel. For per-CPU maps
+	// cilium/ebpf returns a flat slice of length count*possibleCPUs, where
+	// values[i*possibleCPUs : (i+1)*possibleCPUs] holds the per-CPU vector
+	// for keys[i].
 	for {
 		c, err := m.BatchLookup(&cursor, keys, values, nil)
 
 		for i := range keys[:c] {
-			stats = addStats(stats, keys[i], values[i], dur)
+			perCPU := values[i*possibleCPUs : (i+1)*possibleCPUs]
+			stats = addStats(stats, keys[i], sumPerCPUValue(perCPU), dur)
 		}
 
 		if err != nil {
@@ -160,10 +191,9 @@ func listMapBatch(m *ebpf.Map, start time.Time, buf []statEntry) ([]statEntry, e
 //   - []statEntry: a slice of statEntry objects containing the converted map entries
 //   - error: an error if any occurred during map iteration, otherwise nil
 func listMapIterate(m *ebpf.Map, start time.Time, buf []statEntry) ([]statEntry, error) {
-	var (
-		key tcStatkey
-		val tcStatvalue
-	)
+	var key tcStatkey
+	// Per-CPU map iterator expects a slice of length PossibleCPU().
+	val := make([]tcStatvalue, possibleCPUs)
 
 	dur := time.Since(start).Seconds()
 	if dur < minDuration {
@@ -181,7 +211,7 @@ func listMapIterate(m *ebpf.Map, start time.Time, buf []statEntry) ([]statEntry,
 
 	// build statEntry slice converting data where needed
 	for iter.Next(&key, &val) {
-		stats = addStats(stats, key, val, dur)
+		stats = addStats(stats, key, sumPerCPUValue(val), dur)
 	}
 
 	return stats, iter.Err()

@@ -30,18 +30,6 @@
 
 #include "counter_common.h"
 
-/**
- * This function is a BPF program entry point for processing packets using
- * XDP (eXpress Data Path). It invokes the xdp_process_packet function to
- * handle the packet specified by the xdp parameter.
- *
- * @param xdp pointer to the XDP context
- *
- * @return XDP_PASS to indicate that the packet should be passed to the
- *         next processing stage in the network stack
- *
- * @throws none
- */
 SEC("xdp")
 int xdp_count_packets(struct xdp_md *xdp) {
   xdp_process_packet(xdp);

@@ -28,93 +28,55 @@
 #include <bpf/bpf_helpers.h>
 #include <bpf/bpf_tracing.h>
 
+// kprobes have no skb-derived cgroup helper; need the task-walk fallback.
+#define PKTSTAT_NEEDS_CGROUP_HELPERS
 #include "counter_common.h"
 
-/**
- * Hook function for kprobe on tcp_sendmsg function.
- *
- * Populates the statkey structure with information from the TCP packet and
- * the process ID associated with the packet, and updates the packet and byte
- * counters in the packet count map.
- *
- * @param sk pointer to the socket structure
- * @param msg pointer to the msghdr structure
- * @param size size of the packet to be counted
- *
- * @return 0
- *
- * @throws none
- */
 SEC("kprobe/tcp_sendmsg")
 int BPF_KPROBE(tcp_sendmsg, struct sock *sk, struct msghdr *msg, size_t size) {
   statkey key;
   __builtin_memset(&key, 0, sizeof(key));
 
-  pid_t pid = bpf_get_current_pid_tgid() & 0xFFFFFFFF;
+  pid_t pid = bpf_get_current_pid_tgid() >> 32;
+
+  // Filter unsupported families before paying for comm/cgroupid lookups.
+  if (!process_tcp(false, sk, &key, pid))
+    return 0;
+
   if (pid > 0) {
     bpf_get_current_comm(&key.comm, sizeof(key.comm));
   }
-
   key.cgroupid = get_current_cgroup_id();
 
-  if (!process_tcp(false, sk, &key, pid))
-    return 0;
   update_val(&key, size);
 
   return 0;
 }
 
-/**
- * Hook function for kprobe on tcp_cleanup_rbuf function.
- *
- * Populates the statkey structure with information from the socket and the
- * process ID associated with the socket, and updates the packet and byte
- * counters in the packet count map.
- *
- * @param sk pointer to the socket structure
- * @param copied size of the packet to be counted
- *
- * @return 0
- *
- * @throws none
- */
 SEC("kprobe/tcp_cleanup_rbuf")
 int BPF_KPROBE(tcp_cleanup_rbuf, struct sock *sk, int copied) {
-  if (copied <= 0) {
+  if (unlikely(copied <= 0)) {
     return 0;
   }
 
   statkey key;
   __builtin_memset(&key, 0, sizeof(key));
 
-  pid_t pid = bpf_get_current_pid_tgid() & 0xFFFFFFFF;
-  if (pid > 0) {
-    bpf_get_current_comm(&key.comm, sizeof(key.comm));
-  }
-
-  key.cgroupid = get_current_cgroup_id();
+  pid_t pid = bpf_get_current_pid_tgid() >> 32;
 
   if (!process_tcp(true, sk, &key, pid))
     return 0;
+
+  if (pid > 0) {
+    bpf_get_current_comm(&key.comm, sizeof(key.comm));
+  }
+  key.cgroupid = get_current_cgroup_id();
+
   update_val(&key, copied);
 
   return 0;
 }
 
-/**
- * Hook function for kprobe on ip_send_skb function.
- *
- * Populates the statkey structure with information from the socket and the
- * process ID associated with the socket, and updates the packet and byte
- * counters in the packet count map.
- *
- * @param net pointer to the network namespace structure
- * @param skb pointer to the socket buffer
- *
- * @return 0
- *
- * @throws none
- */
 SEC("kprobe/ip_send_skb")
 int BPF_KPROBE(ip_send_skb, struct net *net, struct sk_buff *skb) {
   struct iphdr *iphdr = (struct iphdr *)(BPF_CORE_READ(skb, head) +
@@ -126,38 +88,25 @@ int BPF_KPROBE(ip_send_skb, struct net *net, struct sk_buff *skb) {
   statkey key;
   __builtin_memset(&key, 0, sizeof(key));
 
-  pid_t pid = bpf_get_current_pid_tgid() & 0xFFFFFFFF;
+  pid_t pid = bpf_get_current_pid_tgid() >> 32;
+
+  size_t msglen = process_udp_send(skb, &key, pid);
+  if (unlikely(msglen == 0))
+    return 0;
+
   if (pid > 0) {
     bpf_get_current_comm(&key.comm, sizeof(key.comm));
   }
-
   key.cgroupid = get_current_cgroup_id();
 
-  size_t msglen = process_udp_send(skb, &key, pid);
-  if (msglen > 0)
-    update_val(&key, msglen);
+  update_val(&key, msglen);
 
   return 0;
 }
 
-/**
- * Hook function for kprobe on ip6_send_skb function.
- *
- * Populates the statkey structure with information from the socket and the
- * process ID associated with the socket, and updates the packet and byte
- * counters in the packet count map.
- *
- * @param skb pointer to the socket buffer
- *
- * @return 0
- *
- * @throws none
- */
 SEC("kprobe/ip6_send_skb")
 int BPF_KPROBE(ip6_send_skb, struct sk_buff *skb) {
-  // Use sk_protocol from the socket rather than ip6hdr->nexthdr so that
-  // IPv6 packets with extension headers (where nexthdr != IPPROTO_UDP) are
-  // still accounted for correctly.
+  // Use sk_protocol; ip6hdr->nexthdr would miss UDP behind ext headers.
   struct sock *sk = BPF_CORE_READ(skb, sk);
   if (!sk || BPF_CORE_READ(sk, sk_protocol) != IPPROTO_UDP) {
     return 0;
@@ -166,126 +115,90 @@ int BPF_KPROBE(ip6_send_skb, struct sk_buff *skb) {
   statkey key;
   __builtin_memset(&key, 0, sizeof(key));
 
-  pid_t pid = bpf_get_current_pid_tgid() & 0xFFFFFFFF;
+  pid_t pid = bpf_get_current_pid_tgid() >> 32;
+
+  size_t msglen = process_udp_send(skb, &key, pid);
+  if (unlikely(msglen == 0))
+    return 0;
+
   if (pid > 0) {
     bpf_get_current_comm(&key.comm, sizeof(key.comm));
   }
-
   key.cgroupid = get_current_cgroup_id();
 
-  size_t msglen = process_udp_send(skb, &key, pid);
-  if (msglen > 0)
-    update_val(&key, msglen);
+  update_val(&key, msglen);
 
   return 0;
 }
 
-/**
- * Hook function for kprobe on skb_consume_udp function.
- *
- * Populates the statkey structure with information from the UDP packet and
- * the process ID associated with the packet, and updates the packet and byte
- * counters in the packet count map.
- *
- * @param sk pointer to the socket structure
- * @param skb pointer to the socket buffer containing the UDP packet
- * @param len length of the UDP message
- *
- * @return 0
- *
- * @throws none
- */
 SEC("kprobe/skb_consume_udp")
 int BPF_KPROBE(skb_consume_udp, struct sock *sk, struct sk_buff *skb, int len) {
-  if (len <= 0) {
+  if (unlikely(len <= 0)) {
     return 0;
   }
 
   statkey key;
   __builtin_memset(&key, 0, sizeof(key));
 
-  pid_t pid = bpf_get_current_pid_tgid() & 0xFFFFFFFF;
+  pid_t pid = bpf_get_current_pid_tgid() >> 32;
+
+  if (!process_udp_recv(true, skb, &key, pid, NULL))
+    return 0;
+
   if (pid > 0) {
     bpf_get_current_comm(&key.comm, sizeof(key.comm));
   }
-
   key.cgroupid = get_current_cgroup_id();
 
-  if (!process_udp_recv(true, skb, &key, pid))
-    return 0;
   update_val(&key, len);
 
   return 0;
 }
 
-/**
- * Hook function for kprobe on __icmp_send function.
- *
- * Populates the statkey structure with information from the ICMPv4 packet and
- * the process ID associated with the packet, and updates the packet and byte
- * counters in the packet count map.
- *
- * @param skb pointer to the socket buffer containing the ICMPv4 packet
- * @param type type of ICMPv4 packet
- * @param code code of ICMPv4 packet
- * @param info additional information for the ICMPv4 packet
- * @param opt pointer to the ip_options structure
- *
- * @return 0
- *
- * @throws none
- */
+// __icmp_send fires with the triggering packet's skb, whose transport_header
+// points at the original TCP/UDP, not at the ICMP we're emitting. Read IPs
+// directly from the iphdr and use the kprobe args for type/code.
 SEC("kprobe/__icmp_send")
 int BPF_KPROBE(__icmp_send, struct sk_buff *skb, __u8 type, __u8 code,
                __be32 info, const struct ip_options *opt) {
-  statkey key;
-  __builtin_memset(&key, 0, sizeof(key));
-
-  pid_t pid = bpf_get_current_pid_tgid() & 0xFFFFFFFF;
-  if (pid > 0) {
-    bpf_get_current_comm(&key.comm, sizeof(key.comm));
-  }
-
-  key.cgroupid = get_current_cgroup_id();
-
-  /* Extract src/dst IPs directly from the triggering packet's IP header.
-   * process_icmp4() cannot be used here: the skb's transport_header points to
-   * the triggering transport layer (TCP/UDP), not an ICMP header, so calling
-   * it would read garbage type/code that we would then have to overwrite. */
   struct iphdr *iphdr = (struct iphdr *)(BPF_CORE_READ(skb, head) +
                                          BPF_CORE_READ(skb, network_header));
 
-  __be32 ip4_src = BPF_CORE_READ(iphdr, saddr);
-  __builtin_memcpy(key.srcip.s6_addr, ip4in6, sizeof(ip4in6));
-  __builtin_memcpy(key.srcip.s6_addr + sizeof(ip4in6), &ip4_src,
-                   sizeof(ip4_src));
+  __u16 ihl_raw = (__u16)BPF_CORE_READ_BITFIELD_PROBED(iphdr, ihl);
+  if (unlikely(ihl_raw < 5)) {
+    return 0;
+  }
 
-  __be32 ip4_dst = BPF_CORE_READ(iphdr, daddr);
+  statkey key;
+  __builtin_memset(&key, 0, sizeof(key));
+
+  // iphdr has src=peer, dst=us. The ICMP error we emit flips that, so
+  // write peer into dstip and us into srcip directly.
+  __be32 ip4_remote = BPF_CORE_READ(iphdr, saddr);
+  __be32 ip4_local = BPF_CORE_READ(iphdr, daddr);
+
+  __builtin_memcpy(key.srcip.s6_addr, ip4in6, sizeof(ip4in6));
+  __builtin_memcpy(key.srcip.s6_addr + sizeof(ip4in6), &ip4_local,
+                   sizeof(ip4_local));
+
   __builtin_memcpy(key.dstip.s6_addr, ip4in6, sizeof(ip4in6));
-  __builtin_memcpy(key.dstip.s6_addr + sizeof(ip4in6), &ip4_dst,
-                   sizeof(ip4_dst));
+  __builtin_memcpy(key.dstip.s6_addr + sizeof(ip4in6), &ip4_remote,
+                   sizeof(ip4_remote));
 
   key.proto = IPPROTO_ICMP;
-  key.pid = pid;
-
-  /* __icmp_send is called with the triggering packet's skb, so src/dst IPs
-   * come from the original packet (src=sender, dst=us). Swap them to reflect
-   * the actual ICMP error direction (src=us, dst=original sender).
-   * Use kprobe arguments directly for type/code. */
-  struct in6_addr tmp_ip = key.srcip;
-  key.srcip = key.dstip;
-  key.dstip = tmp_ip;
+  // ICMP has no ports; stash type/code in the port slots.
   key.src_port = type;
   key.dst_port = code;
 
-  /* Compute the actual ICMP error response size per RFC 792 / RFC 1812:
-   * 8-byte ICMP header + original IP header + first 8 bytes of original data.
-   * Validate ihl >= 5 (minimum 20-byte header) before using it. */
-  __u16 tot_len = bpf_ntohs(BPF_CORE_READ(iphdr, tot_len));
-  __u16 ihl_raw = (__u16)BPF_CORE_READ_BITFIELD_PROBED(iphdr, ihl);
-  if (ihl_raw < 5) {
-    return 0;
+  pid_t pid = bpf_get_current_pid_tgid() >> 32;
+  key.pid = pid;
+  if (pid > 0) {
+    bpf_get_current_comm(&key.comm, sizeof(key.comm));
   }
+  key.cgroupid = get_current_cgroup_id();
+
+  // RFC 792 / 1812: 8-byte ICMP header + orig IP header + up to 8 data bytes.
+  __u16 tot_len = bpf_ntohs(BPF_CORE_READ(iphdr, tot_len));
   __u16 ihl_bytes = ihl_raw * 4;
   __u16 payload = (ihl_bytes <= tot_len) ? (tot_len - ihl_bytes) : 0;
   size_t msglen =
@@ -296,63 +209,35 @@ int BPF_KPROBE(__icmp_send, struct sk_buff *skb, __u8 type, __u8 code,
   return 0;
 }
 
-/**
- * Hook function for kprobe on icmp6_send function.
- *
- * Populates the statkey structure with information from the ICMPv6 packet and
- * the process ID associated with the packet, and updates the packet and byte
- * counters in the packet count map.
- *
- * @param skb pointer to the socket buffer containing the ICMPv6 packet
- * @param type type of ICMPv6 packet
- * @param code code of ICMPv6 packet
- * @param info additional information for the ICMPv6 packet
- *
- * @return 0
- *
- * @throws none
- */
+// See __icmp_send for the rationale on skipping process_icmp6().
 SEC("kprobe/icmp6_send")
 int BPF_KPROBE(icmp6_send, struct sk_buff *skb, __u8 type, __u8 code,
                __u32 info) {
-  statkey key;
-  __builtin_memset(&key, 0, sizeof(key));
-
-  pid_t pid = bpf_get_current_pid_tgid() & 0xFFFFFFFF;
-  if (pid > 0) {
-    bpf_get_current_comm(&key.comm, sizeof(key.comm));
-  }
-
-  key.cgroupid = get_current_cgroup_id();
-
-  /* Extract src/dst IPs directly from the triggering packet's IPv6 header.
-   * process_icmp6() cannot be used here: the skb's transport_header points to
-   * the triggering transport layer (TCP/UDP), not an ICMPv6 header, so calling
-   * it would read garbage type/code that we would then have to overwrite. */
   struct ipv6hdr *iphdr =
       (struct ipv6hdr *)(BPF_CORE_READ(skb, head) +
                          BPF_CORE_READ(skb, network_header));
 
-  BPF_CORE_READ_INTO(&key.srcip, iphdr, saddr);
-  BPF_CORE_READ_INTO(&key.dstip, iphdr, daddr);
+  statkey key;
+  __builtin_memset(&key, 0, sizeof(key));
+
+  // iphdr has src=peer, dst=us; flip for the ICMPv6 error we emit.
+  BPF_CORE_READ_INTO(&key.dstip, iphdr, saddr);
+  BPF_CORE_READ_INTO(&key.srcip, iphdr, daddr);
 
   key.proto = IPPROTO_ICMPV6;
-  key.pid = pid;
-
-  /* icmp6_send is called with the triggering packet's skb, so src/dst IPs
-   * come from the original packet (src=sender, dst=us). Swap them to reflect
-   * the actual ICMPv6 error direction (src=us, dst=original sender).
-   * Use kprobe arguments directly for type/code. */
-  struct in6_addr tmp_ip = key.srcip;
-  key.srcip = key.dstip;
-  key.dstip = tmp_ip;
+  // ICMP has no ports; stash type/code in the port slots.
   key.src_port = type;
   key.dst_port = code;
 
-  /* Compute the ICMPv6 error response size per RFC 4443 section 2.4:
-   * 8-byte ICMPv6 header + as much of the original IPv6 packet as fits within
-   * the minimum IPv6 MTU (1280 bytes). Max includable body:
-   * 1280 - 40 (outer IPv6 header) - 8 (ICMPv6 header) = 1232 bytes. */
+  pid_t pid = bpf_get_current_pid_tgid() >> 32;
+  key.pid = pid;
+  if (pid > 0) {
+    bpf_get_current_comm(&key.comm, sizeof(key.comm));
+  }
+  key.cgroupid = get_current_cgroup_id();
+
+  // RFC 4443 §2.4: 8-byte ICMPv6 header + as much orig packet as fits in
+  // the minimum IPv6 MTU (1280 - 40 - 8 = 1232 max body bytes).
   __u16 payload_len = bpf_ntohs(BPF_CORE_READ(iphdr, payload_len));
   __u32 orig_len = (__u32)sizeof(struct ipv6hdr) + payload_len;
   __u32 max_body =
@@ -365,92 +250,56 @@ int BPF_KPROBE(icmp6_send, struct sk_buff *skb, __u8 type, __u8 code,
   return 0;
 }
 
-/**
- * Hook function for kprobe on icmp_rcv function.
- *
- * Populates the statkey structure with information from the ICMP packet and
- * the process ID associated with the packet, and updates the packet and byte
- * counters in the packet count map.
- *
- * @param skb pointer to the socket buffer containing the ICMP packet
- *
- * @return 0
- *
- * @throws none
- */
 SEC("kprobe/icmp_rcv")
 int BPF_KPROBE(icmp_rcv, struct sk_buff *skb) {
   statkey key;
   __builtin_memset(&key, 0, sizeof(key));
 
-  pid_t pid = bpf_get_current_pid_tgid() & 0xFFFFFFFF;
+  pid_t pid = bpf_get_current_pid_tgid() >> 32;
+
+  size_t msglen = process_icmp4(skb, &key, pid);
+  if (unlikely(msglen == 0))
+    return 0;
+
   if (pid > 0) {
     bpf_get_current_comm(&key.comm, sizeof(key.comm));
   }
-
   key.cgroupid = get_current_cgroup_id();
 
-  size_t msglen = process_icmp4(skb, &key, pid);
-  if (msglen > 0)
-    update_val(&key, msglen);
+  update_val(&key, msglen);
 
   return 0;
 }
 
-/**
- * Hook function for kprobe on icmpv6_rcv function.
- *
- * Populates the statkey structure with information from the ICMPv6 packet and
- * the process ID associated with the packet, and updates the packet and byte
- * counters in the packet count map.
- *
- * @param skb pointer to the socket buffer containing the ICMPv6 packet
- *
- * @return 0
- *
- * @throws none
- */
 SEC("kprobe/icmpv6_rcv")
 int BPF_KPROBE(icmpv6_rcv, struct sk_buff *skb) {
   statkey key;
   __builtin_memset(&key, 0, sizeof(key));
 
-  pid_t pid = bpf_get_current_pid_tgid() & 0xFFFFFFFF;
+  pid_t pid = bpf_get_current_pid_tgid() >> 32;
+
+  size_t msglen = process_icmp6(skb, &key, pid);
+  if (unlikely(msglen == 0))
+    return 0;
+
   if (pid > 0) {
     bpf_get_current_comm(&key.comm, sizeof(key.comm));
   }
-
   key.cgroupid = get_current_cgroup_id();
 
-  size_t msglen = process_icmp6(skb, &key, pid);
-  if (msglen > 0)
-    update_val(&key, msglen);
+  update_val(&key, msglen);
 
   return 0;
 }
 
+// Raw-socket ICMP hooks: kept disabled but compileable for future reuse.
 #if 0
-/**
- * Hook function for kprobe on raw_sendmsg function.
- *
- * Populates the statkey structure with information from the raw IPv4 packet and
- * the process ID associated with the packet, and updates the packet and byte
- * counters in the packet count map.
- *
- * @param sk pointer to the socket structure
- * @param msg pointer to the msghdr structure
- * @param len size of the message
- *
- * @return 0
- *
- * @throws none
- */
 SEC("kprobe/raw_sendmsg")
 int BPF_KPROBE(raw_sendmsg, struct sock *sk, struct msghdr *msg, size_t len) {
   statkey key;
   __builtin_memset(&key, 0, sizeof(key));
 
-  pid_t pid = bpf_get_current_pid_tgid() & 0xFFFFFFFF;
+  pid_t pid = bpf_get_current_pid_tgid() >> 32;
 
   if (!process_raw_sendmsg4(sk, msg, &key, pid))
     return 0;
@@ -461,27 +310,12 @@ int BPF_KPROBE(raw_sendmsg, struct sock *sk, struct msghdr *msg, size_t len) {
 #endif
 
 #if 0
-/**
- * Hook function for kprobe on rawv6_sendmsg function.
- *
- * Populates the statkey structure with information from the raw IPv6 packet and
- * the process ID associated with the packet, and updates the packet and byte
- * counters in the packet count map.
- *
- * @param sk pointer to the socket structure
- * @param msg pointer to the msghdr structure
- * @param len size of the message
- *
- * @return 0
- *
- * @throws none
- */
 SEC("kprobe/rawv6_sendmsg")
 int BPF_KPROBE(rawv6_sendmsg, struct sock *sk, struct msghdr *msg, size_t len) {
   statkey key;
   __builtin_memset(&key, 0, sizeof(key));
 
-  pid_t pid = bpf_get_current_pid_tgid() & 0xFFFFFFFF;
+  pid_t pid = bpf_get_current_pid_tgid() >> 32;
 
   if (!process_raw_sendmsg6(sk, msg, &key, pid))
     return 0;

@@ -96,28 +96,45 @@ func main() {
 	// whichever mode-specific object is loaded below.
 	var pktCount *ebpf.Map
 
-	// cfgMap is the eBPF map used to store configuration
-	var cfgMap *ebpf.Map
-
 	switch {
 	case *useCGroup != "":
+		// Detect cgroup fs magic once for both objects we are about to load.
+		// On failure we still proceed with 0, in which case the BPF programs
+		// fall back to the cgroup-v1 task-walk path.
+		cgroupFsMagic, err := getCgroupFsMagic()
+		if err != nil {
+			log.Printf("Unable to identify cgroup fs magic: %v", err)
+		}
+
 		// Load CGroup SKB eBPF object (cgroup_sock_create + cgroup_skb hooks)
+		cgroupSkbSpec, err := loadCgroupSkb()
+		if err != nil {
+			log.Fatalf("Error loading CGroupSKB eBPF spec: %v", err) //nolint:gocritic
+		}
+		if err := applyCgrpfsMagic(cgroupSkbSpec, cgroupFsMagic); err != nil {
+			log.Printf("Unable to set cgrpfs_magic on CGroupSKB spec: %v", err)
+		}
+
 		var objsCgroupSkb cgroupSkbObjects
-		if err := loadCgroupSkbObjects(&objsCgroupSkb, nil); err != nil {
-			log.Fatalf("Error loading CGroupSKB eBPF objects: %v", err) //nolint:gocritic
+		if err := cgroupSkbSpec.LoadAndAssign(&objsCgroupSkb, nil); err != nil {
+			log.Fatalf("Error loading CGroupSKB eBPF objects: %v", err)
 		}
 
 		defer func() { _ = objsCgroupSkb.Close() }()
 
 		pktCount = objsCgroupSkb.PktCount
 
-		// Cgroup fs magic detection
-		cfgMap = objsCgroupSkb.CounterCfg
-		_ = setCfgValues(cfgMap)
-
 		// Load the cgroup_mkdir tracepoint object for cgroup path tracking
+		cgroupSpec, err := loadCgroup()
+		if err != nil {
+			log.Fatalf("Error loading cgroup eBPF spec: %v", err)
+		}
+		if err := applyCgrpfsMagic(cgroupSpec, cgroupFsMagic); err != nil {
+			log.Printf("Unable to set cgrpfs_magic on cgroup spec: %v", err)
+		}
+
 		var objsCgroup cgroupObjects
-		if err := loadCgroupObjects(&objsCgroup, nil); err != nil { //nolint:gocritic
+		if err := cgroupSpec.LoadAndAssign(&objsCgroup, nil); err != nil {
 			log.Fatalf("Error loading cgroup eBPF objects: %v", err)
 		}
 
@@ -137,9 +154,23 @@ func main() {
 
 	// KProbes w/ PID tracking
 	case *useKProbes:
+		// Detect cgroup fs magic once for both objects we are about to load.
+		cgroupFsMagic, err := getCgroupFsMagic()
+		if err != nil {
+			log.Printf("Unable to identify cgroup fs magic: %v", err)
+		}
+
 		// Load KProbe eBPF object
+		kprobeSpec, err := loadKprobe()
+		if err != nil {
+			log.Fatalf("Error loading KProbe eBPF spec: %v", err)
+		}
+		if err := applyCgrpfsMagic(kprobeSpec, cgroupFsMagic); err != nil {
+			log.Printf("Unable to set cgrpfs_magic on KProbe spec: %v", err)
+		}
+
 		var objsKprobe kprobeObjects
-		if err := loadKprobeObjects(&objsKprobe, nil); err != nil {
+		if err := kprobeSpec.LoadAndAssign(&objsKprobe, nil); err != nil {
 			log.Fatalf("Error loading KProbe eBPF objects: %v", err)
 		}
 
@@ -147,13 +178,17 @@ func main() {
 
 		pktCount = objsKprobe.PktCount
 
-		// Cgroup fs magic detection
-		cfgMap = objsKprobe.CounterCfg
-		_ = setCfgValues(cfgMap)
-
 		// Load the cgroup_mkdir tracepoint object for cgroup path tracking
+		cgroupSpec, err := loadCgroup()
+		if err != nil {
+			log.Fatalf("Error loading cgroup eBPF spec: %v", err)
+		}
+		if err := applyCgrpfsMagic(cgroupSpec, cgroupFsMagic); err != nil {
+			log.Printf("Unable to set cgrpfs_magic on cgroup spec: %v", err)
+		}
+
 		var objsCgroup cgroupObjects
-		if err := loadCgroupObjects(&objsCgroup, nil); err != nil {
+		if err := cgroupSpec.LoadAndAssign(&objsCgroup, nil); err != nil {
 			log.Fatalf("Error loading cgroup eBPF objects: %v", err)
 		}
 
@@ -274,31 +309,19 @@ func main() {
 	}
 }
 
-// setCfgValues sets the configuration values in the given eBPF map.
+// applyCgrpfsMagic rewrites the BPF-side `cgrpfs_magic` global constant on a
+// CollectionSpec before it is loaded into the kernel. The BPF programs use
+// this value at runtime to pick between cgroup v1 and v2 code paths; because
+// it is a load-time constant, the verifier dead-code-eliminates the
+// unreached branch and the per-packet cost of a config map lookup vanishes.
 //
-// It retrieves the cgroup filesystem magic number and sets it in the map.
-// The configuration values are used to determine how to extract cgroup
-// information from the packet data.
-func setCfgValues(m *ebpf.Map) error {
-	cgroupFsMagic, err := getCgroupFsMagic()
-	if err != nil {
-		log.Printf("Unable to identify cgroup fs magic: %v", err)
-
-		return err
+// Specs that do not expose this variable (e.g. tc/xdp objects compiled
+// without the cgroup helpers) are silently skipped.
+func applyCgrpfsMagic(spec *ebpf.CollectionSpec, magic uint64) error {
+	v, ok := spec.Variables["cgrpfs_magic"]
+	if !ok || v == nil {
+		return nil
 	}
 
-	v := &cfgValue{
-		CgrpfsMagic: cgroupFsMagic,
-	}
-
-	k := &cfgKey{Key: 0}
-
-	err = m.Update(k, v, ebpf.UpdateAny)
-	if err != nil {
-		log.Printf("Unable to set configuration values: %v", err)
-
-		return err
-	}
-
-	return nil
+	return v.Set(magic)
 }

@@ -44,7 +44,10 @@
 #define MAX_ENTRIES 131072
 
 // IPv6 extension header protocol numbers
-#define IPPROTO_HOPOPTS 0   // Hop-by-Hop Options
-#define IPPROTO_ROUTING 43  // Routing Header
-#define IPPROTO_FRAGMENT 44 // Fragment Header
-#define IPPROTO_DSTOPTS 60  // Destination Options
+#define IPPROTO_HOPOPTS 0
+#define IPPROTO_ROUTING 43
+#define IPPROTO_FRAGMENT 44
+#define IPPROTO_DSTOPTS 60
+
+#define likely(x) __builtin_expect(!!(x), 1)
+#define unlikely(x) __builtin_expect(!!(x), 0)

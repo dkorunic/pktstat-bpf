@@ -23,7 +23,6 @@ package main
 
 import (
 	"net/netip"
-	"structs"
 
 	"github.com/cilium/ebpf"
 )
@@ -45,14 +44,4 @@ type statEntry struct {
 type kprobeHook struct {
 	prog   *ebpf.Program
 	kprobe string
-}
-
-type cfgValue struct {
-	_           structs.HostLayout
-	CgrpfsMagic uint64
-}
-
-type cfgKey struct {
-	_   structs.HostLayout
-	Key uint32
 }

@@ -28,43 +28,28 @@
 #include <bpf/bpf_helpers.h>
 #include <bpf/bpf_tracing.h>
 
-#include "counter_common.h"
+#include "cgroup.h"
 
 typedef struct cgroup_event_t {
-  char path[PATH_MAX]; // cgroup path
-  __u64 cgroupid;      // cgroup ID
+  char path[PATH_MAX];
+  __u64 cgroupid;
 } cgroupevent;
 
+// Per-CPU scratch buffer for the PATH_MAX path string (too large for stack).
 struct {
-  __uint(type, BPF_MAP_TYPE_PERCPU_ARRAY); // per cpu array requires 4.6 kernel
+  __uint(type, BPF_MAP_TYPE_PERCPU_ARRAY);
   __uint(max_entries, 1);
   __type(key, __u32);
   __type(value, cgroupevent);
 } cgroup_event SEC(".maps");
 
 struct {
-  __uint(type,
-         BPF_MAP_TYPE_PERF_EVENT_ARRAY); // perf event array requires 4.3 kernel
+  __uint(type, BPF_MAP_TYPE_PERF_EVENT_ARRAY);
   __uint(max_entries, 0);
   __type(key, int);
   __type(value, __u32);
 } perf_cgroup_event SEC(".maps");
 
-/**
- * trace_cgroup_mkdir traces the creation of a new cgroup directory.
- *
- * This function is attached to the raw tracepoint for cgroup_mkdir events.
- * It retrieves the cgroup ID and the path of the newly created cgroup
- * directory, then stores this information in a cgroupevent structure.
- * The function outputs the event data to a perf event map for further
- * processing.
- *
- * @param ctx A pointer to the bpf_raw_tracepoint_args structure containing
- *            the arguments of the tracepoint, including the destination
- *            cgroup and path.
- *
- * @return Always returns 0.
- */
 SEC("raw_tracepoint/cgroup_mkdir")
 int trace_cgroup_mkdir(struct bpf_raw_tracepoint_args *ctx) {
   struct cgroup *dst_cgrp = (struct cgroup *)ctx->args[0];

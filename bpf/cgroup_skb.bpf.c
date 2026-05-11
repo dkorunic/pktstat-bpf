@@ -28,113 +28,56 @@
 #include <bpf/bpf_helpers.h>
 #include <bpf/bpf_tracing.h>
 
+#define PKTSTAT_NEEDS_CGROUP_HELPERS
 #include "counter_common.h"
 
-// sock_info map: tracks socket cookie → PID/comm, populated on sock_create
+// cookie → PID/comm, populated on sock_create, deleted on sock_release.
 struct {
-  __uint(type, BPF_MAP_TYPE_LRU_HASH); // LRU hash requires 4.10 kernel
+  __uint(type, BPF_MAP_TYPE_LRU_HASH);
   __uint(max_entries, MAX_ENTRIES);
   __type(key, __u64);
   __type(value, sockinfo);
 } sock_info SEC(".maps");
 
-/**
- * Process a socket buffer and extract relevant information to populate the key.
- *
- * This function is called by the BPF program for each socket buffer received.
- * It extracts relevant information from the socket buffer (PID, command name,
- * src/dst IP, src/dst port, protocol) and stores it in the key. It then looks
- * up the value in the packet count hash and increments the packet count and
- * byte count if the key is found. If the key is not found, it creates a new
- * entry with the packet count and byte count set to 1.
- *
- * @param skb pointer to the socket buffer
- *
- * @return none
- *
- * @throws none
- */
 static inline __attribute__((always_inline)) void
 process_cgroup_skb(struct __sk_buff *skb) {
   void *data = (void *)(long)skb->data;
   void *data_end = (void *)(long)skb->data_end;
   __u64 pkt_len = skb->len;
 
-  // initialize key
+  // cgroup_skb sees the packet at L3; skip the L2 parse in process_eth.
   statkey key;
-  __builtin_memset(&key, 0, sizeof(key));
-
-  switch (bpf_ntohs(skb->protocol)) {
-  case ETH_P_IP: {
-    struct iphdr *ip4 = data;
-
-    if (process_ip4(ip4, data_end, &key) == NOK) {
-      return;
-    }
-
-    break;
-  }
-  case ETH_P_IPV6: {
-    struct ipv6hdr *ip6 = data;
-
-    if (process_ip6(ip6, data_end, &key) == NOK) {
-      return;
-    }
-
-    break;
-  }
-  default:
+  if (!process_l3(data, data_end, bpf_ntohs(skb->protocol), &key)) {
     return;
   }
 
   __u64 cookie = bpf_get_socket_cookie(skb);
-  sockinfo *ski = bpf_map_lookup_elem(&sock_info, &cookie);
-  if (ski) {
-    key.pid = ski->pid;
-    __builtin_memcpy(key.comm, ski->comm, sizeof(key.comm));
-  }
-
-  key.cgroupid = get_current_cgroup_id();
-
-  statvalue *val = (statvalue *)bpf_map_lookup_elem(&pkt_count, &key);
-  if (val) {
-    // atomic XADD, doesn't need bpf_spin_lock()
-    __sync_fetch_and_add(&val->packets, 1);
-    __sync_fetch_and_add(&val->bytes, pkt_len);
-  } else {
-    statvalue initval = {.packets = 1, .bytes = pkt_len};
-
-    // BPF_NOEXIST can race on multi-CPU: another CPU may insert the same key
-    // between our lookup and this insert. On failure, retry the lookup and
-    // increment atomically so the packet is not silently dropped.
-    if (bpf_map_update_elem(&pkt_count, &key, &initval, BPF_NOEXIST) != 0) {
-      val = (statvalue *)bpf_map_lookup_elem(&pkt_count, &key);
-      if (val) {
-        __sync_fetch_and_add(&val->packets, 1);
-        __sync_fetch_and_add(&val->bytes, pkt_len);
-      }
+  // Cookie 0 means no associated socket; skip to avoid stale-entry hits.
+  if (likely(cookie != 0)) {
+    sockinfo *ski = bpf_map_lookup_elem(&sock_info, &cookie);
+    if (likely(ski)) {
+      key.pid = ski->pid;
+      __builtin_memcpy(key.comm, ski->comm, sizeof(key.comm));
     }
   }
+
+  // v2: skb-derived helper (cheap, correct in softirq). v1: task-walk
+  // fallback. Branch is folded at load time via cgrpfs_magic.
+  if (cgrpfs_magic == CGROUP2_FSMAGIC) {
+    key.cgroupid = bpf_skb_cgroup_id(skb, 0);
+  } else {
+    key.cgroupid = get_current_cgroup_id_v1();
+  }
+
+  update_val(&key, pkt_len);
 }
 
-/**
- * BPF program entry point for tracking socket creations in a CGroup.
- *
- * This program is attached to the sock_create hook in the CGroup
- * hierarchy. It records the PID and command name of the process
- * creating the socket in the sock_info map.
- *
- * @param sk pointer to the newly created socket
- *
- * @return ALLOW_SK to allow the socket creation
- *
- * @throws none
- */
 SEC("cgroup/sock_create")
 int cgroup_sock_create(struct bpf_sock *sk) {
   __u64 cookie = bpf_get_socket_cookie(sk);
+  // Top 32 bits = TGID (userspace PID); low 32 bits = kernel TID.
   sockinfo ski = {
-      .pid = bpf_get_current_pid_tgid() & 0xFFFFFFFF,
+      .pid = bpf_get_current_pid_tgid() >> 32,
       .comm = {0},
   };
 
@@ -145,19 +88,18 @@ int cgroup_sock_create(struct bpf_sock *sk) {
   return ALLOW_SK;
 }
 
-/**
- * BPF program entry point for tracking ingress traffic in a CGroup.
- *
- * This program is attached to the ingress hook in the CGroup hierarchy.
- * It records the packet and byte counters for the process associated with
- * the socket in the pkt_count map.
- *
- * @param skb pointer to the packet buffer
- *
- * @return ALLOW_PKT to allow the packet to be processed
- *
- * @throws none
- */
+// Counterpart to sock_create; frees the sock_info slot eagerly so the LRU
+// map doesn't carry dead bindings until natural eviction.
+SEC("cgroup/sock_release")
+int cgroup_sock_release(struct bpf_sock *sk) {
+  __u64 cookie = bpf_get_socket_cookie(sk);
+  if (likely(cookie != 0)) {
+    bpf_map_delete_elem(&sock_info, &cookie);
+  }
+
+  return ALLOW_SK;
+}
+
 SEC("cgroup_skb/ingress")
 int cgroup_skb_ingress(struct __sk_buff *skb) {
   process_cgroup_skb(skb);
@@ -165,19 +107,6 @@ int cgroup_skb_ingress(struct __sk_buff *skb) {
   return ALLOW_PKT;
 }
 
-/**
- * BPF program entry point for tracking egress traffic in a CGroup.
- *
- * This program is attached to the egress hook in the CGroup hierarchy.
- * It records the packet and byte counters for the process associated with
- * the socket in the pkt_count map.
- *
- * @param skb pointer to the packet buffer
- *
- * @return ALLOW_PKT to allow the packet to be processed
- *
- * @throws none
- */
 SEC("cgroup_skb/egress")
 int cgroup_skb_egress(struct __sk_buff *skb) {
   process_cgroup_skb(skb);

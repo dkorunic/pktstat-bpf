@@ -30,19 +30,6 @@
 
 #include "counter_common.h"
 
-/**
- * Process a packet for Traffic Control and update statistics.
- *
- * This function is a BPF program entry point for packet processing using
- * Traffic Control (TC) hooks. It invokes the tc_process_packet function
- * to handle the packet specified by the skb parameter.
- *
- * @param skb pointer to the packet buffer
- *
- * @return TC_ACT_UNSPEC to indicate no specific TC action is taken
- *
- * @throws none
- */
 SEC("tc")
 int tc_count_packets(struct __sk_buff *skb) {
   tc_process_packet(skb);

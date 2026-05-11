@@ -242,6 +242,20 @@ func startCgroup(objs cgroupSkbObjects, cgroupPath string, links []link.Link) []
 
 	links = append(links, l)
 
+	// sock_release is the lifecycle counterpart to sock_create (kernel ≥5.4).
+	// Best-effort: on older kernels the attach fails and we just rely on LRU
+	// eviction to age out stale sock_info entries.
+	l, err = link.AttachCgroup(link.CgroupOptions{
+		Program: objs.CgroupSockRelease,
+		Attach:  ebpf.AttachCgroupInetSockRelease,
+		Path:    cgroupPath,
+	})
+	if err != nil {
+		log.Printf("Unable to attach CgroupSockRelease to %s (requires kernel >=5.4): %v", cgroupPath, err)
+	} else {
+		links = append(links, l)
+	}
+
 	l, err = link.AttachCgroup(link.CgroupOptions{
 		Program: objs.CgroupSkbIngress,
 		Attach:  ebpf.AttachCGroupInetIngress,

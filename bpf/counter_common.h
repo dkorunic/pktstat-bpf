@@ -26,94 +26,69 @@
 #include "cgroup.h"
 #include "counter.h"
 
-// Counter map key struct for IP traffic
-typedef struct statkey_t {
-  struct in6_addr srcip;    // source IPv6 address
-  struct in6_addr dstip;    // destination IPv6 address
-  __u64 cgroupid;           // cgroup ID
-  char comm[TASK_COMM_LEN]; // process command
-  pid_t pid;                // process ID
-  __u16 src_port;           // source port
-  __u16 dst_port;           // destination port
-  __u8 proto;               // transport protocol
+// Packed: drops 7 bytes of tail padding, shrinking 72 → 65. Saves hashed
+// bytes per lookup and nCPU × 7 bytes per entry under LRU_PERCPU_HASH.
+// All interior fields stay naturally aligned within the first 65 bytes.
+typedef struct __attribute__((packed)) statkey_t {
+  struct in6_addr srcip;
+  struct in6_addr dstip;
+  __u64 cgroupid;
+  char comm[TASK_COMM_LEN];
+  pid_t pid;
+  __u16 src_port;
+  __u16 dst_port;
+  __u8 proto;
 } statkey;
 
-// Counter map value struct with counters
 typedef struct statvalue_t {
-  __u64 packets; // packets ingress + egress
-  __u64 bytes;   // bytes ingress + egress
+  __u64 packets;
+  __u64 bytes;
 } statvalue;
 
-// Counter map definition
+// Per-CPU slots avoid cross-CPU atomic contention; userspace sums on read.
 struct {
-  __uint(type, BPF_MAP_TYPE_LRU_HASH); // LRU hash requires 4.10 kernel
+  __uint(type, BPF_MAP_TYPE_LRU_PERCPU_HASH);
   __uint(max_entries, MAX_ENTRIES);
   __type(key, statkey);
   __type(value, statvalue);
 } pkt_count SEC(".maps");
 
-// Sockinfo struct
 typedef struct sockinfo_t {
   __u8 comm[TASK_COMM_LEN];
   pid_t pid;
 } sockinfo;
 
-// Configuration map value struct
-typedef struct counter_cfg_t {
-  __u64 cgrpfs_magic; // cgroupv1 or cgroupv2 fs magic
-} counter_cfg_value;
+// Patched at load time; verifier folds the v1/v2 branch into a constant.
+// Only emitted in translation units that actually call the cgroup helpers.
+#ifdef PKTSTAT_NEEDS_CGROUP_HELPERS
+volatile const __u64 cgrpfs_magic = 0;
+#endif
 
-// Configuration map definition
-struct {
-  __uint(type, BPF_MAP_TYPE_ARRAY);
-  __uint(max_entries, 1);
-  __type(key, __u32);
-  __type(value, counter_cfg_value);
-} counter_cfg SEC(".maps");
-
-// IPv4-mapped IPv6 address prefix (for V4MAPPED conversion)
+// V4MAPPED prefix: ::ffff:a.b.c.d
 static const __u8 ip4in6[] = {0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0xff, 0xff};
 
-/**
- * Process an IPv4 packet and populate the key with the relevant information.
- *
- * @param ip4 pointer to the start of the IPv4 header
- * @param data_end pointer to the end of the packet data
- * @param key pointer to the statkey structure to be populated
- *
- * @return OK if the packet was processed successfully, NOK otherwise
- *
- * @throws none
- */
 static inline __attribute__((always_inline)) int
 process_ip4(struct iphdr *ip4, void *data_end, statkey *key) {
-  // validate IPv4 fixed header size
-  if ((void *)ip4 + sizeof(*ip4) > data_end) {
+  if (unlikely((void *)ip4 + sizeof(*ip4) > data_end)) {
     return NOK;
   }
 
-  // ihl is the header length in 32-bit words (4-bit field, range 0–15).
-  // Values < 5 are malformed; values > 5 indicate IPv4 options are present.
+  // ihl: header length in 32-bit words; <5 is malformed.
   __u8 ihl = ip4->ihl;
-  if (ihl < 5) {
+  if (unlikely(ihl < 5)) {
     return NOK;
   }
   __u32 ip4_hdr_len = (__u32)ihl * 4;
 
-  // validate the full IP header (including any options) fits in the packet
-  if ((void *)ip4 + ip4_hdr_len > data_end) {
+  if (unlikely((void *)ip4 + ip4_hdr_len > data_end)) {
     return NOK;
   }
 
-  // transport header starts after the variable-length IP header
   void *transport = (void *)ip4 + ip4_hdr_len;
 
-  // convert to V4MAPPED address
   __builtin_memcpy(key->srcip.s6_addr, ip4in6, sizeof(ip4in6));
   __builtin_memcpy(key->srcip.s6_addr + sizeof(ip4in6), &ip4->saddr,
                    sizeof(ip4->saddr));
-
-  // convert to V4MAPPED address
   __builtin_memcpy(key->dstip.s6_addr, ip4in6, sizeof(ip4in6));
   __builtin_memcpy(key->dstip.s6_addr + sizeof(ip4in6), &ip4->daddr,
                    sizeof(ip4->daddr));
@@ -123,43 +98,30 @@ process_ip4(struct iphdr *ip4, void *data_end, statkey *key) {
   switch (ip4->protocol) {
   case IPPROTO_TCP: {
     struct tcphdr *tcp = transport;
-
-    // validate TCP size
-    if ((void *)tcp + sizeof(*tcp) > data_end) {
+    if (unlikely((void *)tcp + sizeof(*tcp) > data_end)) {
       return NOK;
     }
-
     key->src_port = bpf_ntohs(tcp->source);
     key->dst_port = bpf_ntohs(tcp->dest);
-
     break;
   }
   case IPPROTO_UDP: {
     struct udphdr *udp = transport;
-
-    // validate UDP size
-    if ((void *)udp + sizeof(*udp) > data_end) {
+    if (unlikely((void *)udp + sizeof(*udp) > data_end)) {
       return NOK;
     }
-
     key->src_port = bpf_ntohs(udp->source);
     key->dst_port = bpf_ntohs(udp->dest);
-
     break;
   }
   case IPPROTO_ICMP: {
     struct icmphdr *icmp = transport;
-
-    // validate ICMP size
-    if ((void *)icmp + sizeof(*icmp) > data_end) {
+    if (unlikely((void *)icmp + sizeof(*icmp) > data_end)) {
       return NOK;
     }
-
-    // store ICMP type in src port
+    // ICMP has no ports; stash type/code in the port slots.
     key->src_port = icmp->type;
-    // store ICMP code in dst port
     key->dst_port = icmp->code;
-
     break;
   }
   }
@@ -167,51 +129,41 @@ process_ip4(struct iphdr *ip4, void *data_end, statkey *key) {
   return OK;
 }
 
-/**
- * Process an IPv6 packet and extract relevant information to populate the key.
- *
- * @param ip6 pointer to the start of the IPv6 header
- * @param data_end pointer to the end of the packet data
- * @param key pointer to the statkey structure to be populated
- *
- * @return OK if the packet was successfully processed, NOK otherwise
- *
- * @throws none
- */
 static inline __attribute__((always_inline)) int
 process_ip6(struct ipv6hdr *ip6, void *data_end, statkey *key) {
-  // validate IPv6 size
-  if ((void *)ip6 + sizeof(*ip6) > data_end) {
+  if (unlikely((void *)ip6 + sizeof(*ip6) > data_end)) {
     return NOK;
   }
 
-  // IPv6 copy of source IP and destination IP
   key->srcip = ip6->saddr;
   key->dstip = ip6->daddr;
 
-  // Walk optional extension headers to find the actual transport protocol.
-  // Variable-length extension headers (HopByHop, Routing, Destination):
-  //   total size = (hdr_ext_len + 1) * 8 bytes; next_header at offset 0.
-  // Fragment header: fixed 8 bytes; next_header at offset 0.
+  // Walk ext headers: HopByHop/Routing/DstOpts size = (hdr_ext_len+1)*8;
+  // Fragment is fixed 8 bytes. next_header lives at offset 0.
   __u8 nexthdr = ip6->nexthdr;
   void *transport = (void *)ip6 + sizeof(*ip6);
 
-#pragma unroll
-  for (int i = 0; i < 6; i++) {
-    if (nexthdr != IPPROTO_HOPOPTS && nexthdr != IPPROTO_ROUTING &&
-        nexthdr != IPPROTO_FRAGMENT && nexthdr != IPPROTO_DSTOPTS) {
+  // Cap at 2 iterations: real traffic almost never has >1 ext header.
+  // Chained ext headers beyond that attribute to the depth-1 next_header
+  // (e.g. IPPROTO_ROUTING) rather than the actual transport. Intentional.
+#pragma unroll 2
+  for (int i = 0; i < 2; i++) {
+    if (likely(nexthdr != IPPROTO_HOPOPTS && nexthdr != IPPROTO_ROUTING &&
+               nexthdr != IPPROTO_FRAGMENT && nexthdr != IPPROTO_DSTOPTS)) {
       break;
     }
     if (nexthdr == IPPROTO_FRAGMENT) {
-      if (transport + 8 > data_end)
+      if (unlikely(transport + 8 > data_end))
         return NOK;
       nexthdr = ((__u8 *)transport)[0];
       transport += 8;
     } else {
-      if (transport + 2 > data_end)
+      if (unlikely(transport + 2 > data_end))
         return NOK;
-      __u8 hdrlen = ((__u8 *)transport)[1];
-      nexthdr = ((__u8 *)transport)[0];
+      // (next_header, hdr_ext_len) as a network-order u16.
+      __u16 hdr_pair = bpf_ntohs(*(__u16 *)transport);
+      nexthdr = hdr_pair >> 8;
+      __u8 hdrlen = (__u8)hdr_pair;
       transport += ((__u32)(hdrlen + 1) * 8);
     }
   }
@@ -221,43 +173,30 @@ process_ip6(struct ipv6hdr *ip6, void *data_end, statkey *key) {
   switch (nexthdr) {
   case IPPROTO_TCP: {
     struct tcphdr *tcp = transport;
-
-    // validate TCP size
-    if ((void *)tcp + sizeof(*tcp) > data_end) {
+    if (unlikely((void *)tcp + sizeof(*tcp) > data_end)) {
       return NOK;
     }
-
     key->src_port = bpf_ntohs(tcp->source);
     key->dst_port = bpf_ntohs(tcp->dest);
-
     break;
   }
   case IPPROTO_UDP: {
     struct udphdr *udp = transport;
-
-    // validate UDP size
-    if ((void *)udp + sizeof(*udp) > data_end) {
+    if (unlikely((void *)udp + sizeof(*udp) > data_end)) {
       return NOK;
     }
-
     key->src_port = bpf_ntohs(udp->source);
     key->dst_port = bpf_ntohs(udp->dest);
-
     break;
   }
   case IPPROTO_ICMPV6: {
     struct icmp6hdr *icmp = transport;
-
-    // validate ICMPv6 size
-    if ((void *)icmp + sizeof(*icmp) > data_end) {
+    if (unlikely((void *)icmp + sizeof(*icmp) > data_end)) {
       return NOK;
     }
-
-    // store ICMP type in src port
+    // ICMP has no ports; stash type/code in the port slots.
     key->src_port = icmp->icmp6_type;
-    // store ICMP code in dst port
     key->dst_port = icmp->icmp6_code;
-
     break;
   }
   }
@@ -265,103 +204,62 @@ process_ip6(struct ipv6hdr *ip6, void *data_end, statkey *key) {
   return OK;
 }
 
-/**
- * Update the packet and byte counters for the given key in the packet count
- * map. If the key is not present, it is inserted with an initial value of 1
- * packet and the given size in bytes. If the key is already present, the
- * packet and byte counters are atomically incremented.
- *
- * @param key pointer to the statkey structure containing the key to be
- * updated
- * @param size size of the packet to be counted
- *
- * @throws none
- */
 static inline __attribute__((always_inline)) void update_val(statkey *key,
                                                              size_t size) {
-  // lookup value in hash
+  // LRU_PERCPU_HASH: `val` is this CPU's slot. Plain stores are race-free.
   statvalue *val = (statvalue *)bpf_map_lookup_elem(&pkt_count, key);
-  if (val) {
-    // atomic XADD, doesn't need bpf_spin_lock()
-    __sync_fetch_and_add(&val->packets, 1);
-    __sync_fetch_and_add(&val->bytes, size);
-  } else {
-    statvalue initval = {.packets = 1, .bytes = size};
+  if (likely(val)) {
+    val->packets += 1;
+    val->bytes += size;
+    return;
+  }
 
-    // BPF_NOEXIST can race on multi-CPU: another CPU may insert the same key
-    // between our lookup and this insert. On failure, retry the lookup and
-    // increment atomically so the packet is not silently dropped.
-    if (bpf_map_update_elem(&pkt_count, key, &initval, BPF_NOEXIST) != 0) {
-      val = (statvalue *)bpf_map_lookup_elem(&pkt_count, key);
-      if (val) {
-        __sync_fetch_and_add(&val->packets, 1);
-        __sync_fetch_and_add(&val->bytes, size);
-      }
+  // Key existence is global; per-CPU slots are zero-initialized on first
+  // insert. So if BPF_NOEXIST loses the race, our slot is guaranteed (0,0)
+  // and the retry +=  produces correct sums after userspace aggregation.
+  statvalue initval = {.packets = 1, .bytes = size};
+  if (unlikely(bpf_map_update_elem(&pkt_count, key, &initval, BPF_NOEXIST) !=
+               0)) {
+    val = (statvalue *)bpf_map_lookup_elem(&pkt_count, key);
+    if (val) {
+      val->packets += 1;
+      val->bytes += size;
     }
   }
 }
 
-/**
- * Process an Ethernet packet and populate the key with the relevant
- * information.
- *
- * @param data pointer to the start of the packet data
- * @param data_end pointer to the end of the packet data
- * @param pkt_len length of the packet
- *
- * @return void
- *
- * @throws none
- */
+static inline __attribute__((always_inline)) bool
+process_l3(void *l3, void *data_end, __u16 proto_host, statkey *key) {
+  // Skip the memset for non-IP traffic.
+  if (proto_host != ETH_P_IP && proto_host != ETH_P_IPV6) {
+    return false;
+  }
+
+  __builtin_memset(key, 0, sizeof(*key));
+
+  if (proto_host == ETH_P_IP) {
+    return process_ip4((struct iphdr *)l3, data_end, key) == OK;
+  }
+  return process_ip6((struct ipv6hdr *)l3, data_end, key) == OK;
+}
+
 static inline __attribute__((always_inline)) void
 process_eth(void *data, void *data_end, __u64 pkt_len) {
   struct ethhdr *eth = data;
 
-  // validate Ethernet size
-  if ((void *)eth + sizeof(*eth) > data_end) {
+  if (unlikely((void *)eth + sizeof(*eth) > data_end)) {
     return;
   }
 
-  // initialize key
   statkey key;
-  __builtin_memset(&key, 0, sizeof(key));
-
-  // process only IPv4 and IPv6
-  switch (bpf_ntohs(eth->h_proto)) {
-  case ETH_P_IP: {
-    struct iphdr *ip4 = (void *)eth + sizeof(*eth);
-
-    if (process_ip4(ip4, data_end, &key) == NOK) {
-      return;
-    }
-
-    break;
-  }
-  case ETH_P_IPV6: {
-    struct ipv6hdr *ip6 = (void *)eth + sizeof(*eth);
-
-    if (process_ip6(ip6, data_end, &key) == NOK) {
-      return;
-    }
-
-    break;
-  }
-  default:
+  if (!process_l3((void *)eth + sizeof(*eth), data_end,
+                  bpf_ntohs(eth->h_proto), &key)) {
     return;
   }
 
   update_val(&key, pkt_len);
 }
 
-/**
- * Process the packet for traffic control and take necessary actions.
- *
- * @param skb pointer to the packet buffer
- *
- * @return void
- *
- * @throws none
- */
 static inline __attribute__((always_inline)) void
 tc_process_packet(struct __sk_buff *skb) {
   void *data = (void *)(long)skb->data;
@@ -370,15 +268,6 @@ tc_process_packet(struct __sk_buff *skb) {
   process_eth(data, data_end, skb->len);
 }
 
-/**
- * Process the packet for XDP (eXpress Data Path) and take necessary actions.
- *
- * @param ctx pointer to the XDP context
- *
- * @return void
- *
- * @throws none
- */
 static inline __attribute__((always_inline)) void
 xdp_process_packet(struct xdp_md *xdp) {
   void *data = (void *)(long)xdp->data;
@@ -387,194 +276,143 @@ xdp_process_packet(struct xdp_md *xdp) {
   process_eth(data, data_end, bpf_xdp_get_buff_len(xdp));
 }
 
-/**
- * Process TCP socket information and populate the key structure with
- * extracted data.
- *
- * @param receive boolean flag indicating whether the socket is a receiver
- * @param sk pointer to the socket structure
- * @param key pointer to the statkey structure to be populated
- * @param pid process ID associated with the socket
- *
- * This function reads the socket's address family and based on whether it is
- * IPv4 or IPv6, it extracts the source and destination IP addresses and
- * ports. It also sets the protocol to TCP and assigns the provided process ID
- * to the key.
- *
- * The function handles both IPv4 and IPv6 addresses by converting them to an
- * IPv6-mapped format for uniformity.
- *
- * @throws none
- */
 static inline __attribute__((always_inline)) bool
 process_tcp(bool receive, struct sock *sk, statkey *key, pid_t pid) {
   __u16 family = BPF_CORE_READ(sk, __sk_common.skc_family);
 
+  // Socket holds local in skc_(rcv_)saddr/skc_num, remote in skc_daddr/dport.
+  // Pick destinations up-front for the receive flow instead of swapping.
+  struct in6_addr *src = receive ? &key->dstip : &key->srcip;
+  struct in6_addr *dst = receive ? &key->srcip : &key->dstip;
+
   switch (family) {
   case AF_INET: {
-    // convert to V4MAPPED address
-    __be32 ip4_src = BPF_CORE_READ(sk, __sk_common.skc_rcv_saddr);
-    __builtin_memcpy(key->srcip.s6_addr, ip4in6, sizeof(ip4in6));
-    __builtin_memcpy(key->srcip.s6_addr + sizeof(ip4in6), &ip4_src,
-                     sizeof(ip4_src));
+    __be32 ip4_local = BPF_CORE_READ(sk, __sk_common.skc_rcv_saddr);
+    __builtin_memcpy(src->s6_addr, ip4in6, sizeof(ip4in6));
+    __builtin_memcpy(src->s6_addr + sizeof(ip4in6), &ip4_local,
+                     sizeof(ip4_local));
 
-    // convert to V4MAPPED address
-    __be32 ip4_dst = BPF_CORE_READ(sk, __sk_common.skc_daddr);
-    __builtin_memcpy(key->dstip.s6_addr, ip4in6, sizeof(ip4in6));
-    __builtin_memcpy(key->dstip.s6_addr + sizeof(ip4in6), &ip4_dst,
-                     sizeof(ip4_dst));
-
+    __be32 ip4_remote = BPF_CORE_READ(sk, __sk_common.skc_daddr);
+    __builtin_memcpy(dst->s6_addr, ip4in6, sizeof(ip4in6));
+    __builtin_memcpy(dst->s6_addr + sizeof(ip4in6), &ip4_remote,
+                     sizeof(ip4_remote));
     break;
   }
-  case AF_INET6: {
-    BPF_CORE_READ_INTO(&key->srcip, sk, __sk_common.skc_v6_rcv_saddr);
-    BPF_CORE_READ_INTO(&key->dstip, sk, __sk_common.skc_v6_daddr);
-
+  case AF_INET6:
+    BPF_CORE_READ_INTO(src, sk, __sk_common.skc_v6_rcv_saddr);
+    BPF_CORE_READ_INTO(dst, sk, __sk_common.skc_v6_daddr);
     break;
-  }
-  default: {
+  default:
     return false;
   }
-  }
 
-  __u16 sport = BPF_CORE_READ(sk, __sk_common.skc_num);
-  if (sport == 0) {
+  __u16 local_port = BPF_CORE_READ(sk, __sk_common.skc_num);
+  if (unlikely(local_port == 0)) {
+    // Unbound sockets keep the source port in inet_sport (network order).
     struct inet_sock *isk = (struct inet_sock *)sk;
-    sport = bpf_ntohs(BPF_CORE_READ(isk, inet_sport));
+    local_port = bpf_ntohs(BPF_CORE_READ(isk, inet_sport));
   }
-  key->src_port = sport;
-  key->dst_port = bpf_ntohs(BPF_CORE_READ(sk, __sk_common.skc_dport));
+  __u16 remote_port = bpf_ntohs(BPF_CORE_READ(sk, __sk_common.skc_dport));
+
+  if (receive) {
+    key->src_port = remote_port;
+    key->dst_port = local_port;
+  } else {
+    key->src_port = local_port;
+    key->dst_port = remote_port;
+  }
 
   key->proto = IPPROTO_TCP;
   key->pid = pid;
 
-  /* we need to swap the source and destination IP addresses and ports */
-  if (receive) {
-    struct in6_addr tmp_ip = key->srcip;
-    key->srcip = key->dstip;
-    key->dstip = tmp_ip;
-
-    __u16 tmp_port = key->src_port;
-    key->src_port = key->dst_port;
-    key->dst_port = tmp_port;
-  }
-
   return true;
 }
 
-/**
- * Process UDP socket information from a sk_buff and populate the key
- * structure.
- *
- * @param receive boolean flag indicating whether the socket is a receiver
- * @param skb pointer to the socket buffer containing the UDP packet
- * @param key pointer to the statkey structure to be populated
- * @param pid process ID associated with the packet
- *
- * This function extracts source and destination IP addresses and ports from
- * the UDP packet, taking into account both IPv4 and IPv6 headers. It stores
- * these details in the provided statkey structure, along with the protocol
- * type set to UDP and the associated process ID.
- *
- * @throws none
- */
+// On success, optionally publishes the parsed udphdr via udphdr_out (NULL
+// to skip). Caller must check the return value before dereferencing it.
 static inline __attribute__((always_inline)) bool
-process_udp_recv(bool receive, struct sk_buff *skb, statkey *key, pid_t pid) {
-  struct udphdr *udphdr =
-      (struct udphdr *)(BPF_CORE_READ(skb, head) +
-                        BPF_CORE_READ(skb, transport_header));
+process_udp_recv(bool receive, struct sk_buff *skb, statkey *key, pid_t pid,
+                 struct udphdr **udphdr_out) {
+  // Cache the CO-RE chain: the compiler can't CSE across the relocation.
+  unsigned char *head = (unsigned char *)BPF_CORE_READ(skb, head);
+  __u16 nh_off = BPF_CORE_READ(skb, network_header);
+  __u16 th_off = BPF_CORE_READ(skb, transport_header);
+
+  struct udphdr *udphdr = (struct udphdr *)(head + th_off);
 
   __u16 proto = BPF_CORE_READ(skb, protocol);
 
+  // Packet IP header holds src=sender, dst=us; flip for the send direction.
+  struct in6_addr *ip_src = receive ? &key->srcip : &key->dstip;
+  struct in6_addr *ip_dst = receive ? &key->dstip : &key->srcip;
+
   switch (bpf_ntohs(proto)) {
   case ETH_P_IP: {
-    struct iphdr *iphdr = (struct iphdr *)(BPF_CORE_READ(skb, head) +
-                                           BPF_CORE_READ(skb, network_header));
+    struct iphdr *iphdr = (struct iphdr *)(head + nh_off);
+    __be32 ip4_pkt_src = BPF_CORE_READ(iphdr, saddr);
+    __builtin_memcpy(ip_src->s6_addr, ip4in6, sizeof(ip4in6));
+    __builtin_memcpy(ip_src->s6_addr + sizeof(ip4in6), &ip4_pkt_src,
+                     sizeof(ip4_pkt_src));
 
-    // convert to V4MAPPED address
-    __be32 ip4_src = BPF_CORE_READ(iphdr, saddr);
-    __builtin_memcpy(key->srcip.s6_addr, ip4in6, sizeof(ip4in6));
-    __builtin_memcpy(key->srcip.s6_addr + sizeof(ip4in6), &ip4_src,
-                     sizeof(ip4_src));
-
-    // convert to V4MAPPED address
-    __be32 ip4_dst = BPF_CORE_READ(iphdr, daddr);
-    __builtin_memcpy(key->dstip.s6_addr, ip4in6, sizeof(ip4in6));
-    __builtin_memcpy(key->dstip.s6_addr + sizeof(ip4in6), &ip4_dst,
-                     sizeof(ip4_dst));
+    __be32 ip4_pkt_dst = BPF_CORE_READ(iphdr, daddr);
+    __builtin_memcpy(ip_dst->s6_addr, ip4in6, sizeof(ip4in6));
+    __builtin_memcpy(ip_dst->s6_addr + sizeof(ip4in6), &ip4_pkt_dst,
+                     sizeof(ip4_pkt_dst));
     break;
   }
   case ETH_P_IPV6: {
-    struct ipv6hdr *iphdr =
-        (struct ipv6hdr *)(BPF_CORE_READ(skb, head) +
-                           BPF_CORE_READ(skb, network_header));
-
-    BPF_CORE_READ_INTO(&key->srcip, iphdr, saddr);
-    BPF_CORE_READ_INTO(&key->dstip, iphdr, daddr);
-
+    struct ipv6hdr *iphdr = (struct ipv6hdr *)(head + nh_off);
+    BPF_CORE_READ_INTO(ip_src, iphdr, saddr);
+    BPF_CORE_READ_INTO(ip_dst, iphdr, daddr);
     break;
   }
   default:
     return false;
   }
 
-  key->src_port = bpf_ntohs(BPF_CORE_READ(udphdr, source));
-  key->dst_port = bpf_ntohs(BPF_CORE_READ(udphdr, dest));
+  __u16 pkt_src_port = bpf_ntohs(BPF_CORE_READ(udphdr, source));
+  __u16 pkt_dst_port = bpf_ntohs(BPF_CORE_READ(udphdr, dest));
+
+  if (receive) {
+    key->src_port = pkt_src_port;
+    key->dst_port = pkt_dst_port;
+  } else {
+    key->src_port = pkt_dst_port;
+    key->dst_port = pkt_src_port;
+  }
 
   key->proto = IPPROTO_UDP;
   key->pid = pid;
 
-  /* we need to swap the source and destination IP addresses and ports */
-  if (receive) {
-    struct in6_addr tmp_ip = key->srcip;
-    key->srcip = key->dstip;
-    key->dstip = tmp_ip;
-
-    __u16 tmp_port = key->src_port;
-    key->src_port = key->dst_port;
-    key->dst_port = tmp_port;
-  }
+  // Publish only on success so failures leave caller's pointer untouched.
+  if (udphdr_out)
+    *udphdr_out = udphdr;
 
   return true;
 }
 
-/**
- * Process an ICMPv4 packet and populate the key with the relevant information.
- *
- * @param skb pointer to the socket buffer containing the ICMPv4 packet
- * @param key pointer to the statkey structure to be populated
- * @param pid process ID associated with the packet
- *
- * This function extracts source and destination IP addresses and ICMP type
- * and code from the ICMPv4 packet, taking into account the IPv4 header. It
- * stores these details in the provided statkey structure, along with the
- * protocol type set to ICMPv4 and the associated process ID.
- *
- * @throws none
- */
+// Returns the IP-payload length (0 if header math fails sanity).
 static inline __attribute__((always_inline)) size_t
 process_icmp4(struct sk_buff *skb, statkey *key, pid_t pid) {
-  struct icmphdr *icmphdr =
-      (struct icmphdr *)(BPF_CORE_READ(skb, head) +
-                         BPF_CORE_READ(skb, transport_header));
-  struct iphdr *iphdr = (struct iphdr *)(BPF_CORE_READ(skb, head) +
-                                         BPF_CORE_READ(skb, network_header));
+  unsigned char *head = (unsigned char *)BPF_CORE_READ(skb, head);
+  __u16 nh_off = BPF_CORE_READ(skb, network_header);
+  __u16 th_off = BPF_CORE_READ(skb, transport_header);
 
-  // convert to V4MAPPED address
+  struct icmphdr *icmphdr = (struct icmphdr *)(head + th_off);
+  struct iphdr *iphdr = (struct iphdr *)(head + nh_off);
+
   __be32 ip4_src = BPF_CORE_READ(iphdr, saddr);
   __builtin_memcpy(key->srcip.s6_addr, ip4in6, sizeof(ip4in6));
   __builtin_memcpy(key->srcip.s6_addr + sizeof(ip4in6), &ip4_src,
                    sizeof(ip4_src));
 
-  // convert to V4MAPPED address
   __be32 ip4_dst = BPF_CORE_READ(iphdr, daddr);
   __builtin_memcpy(key->dstip.s6_addr, ip4in6, sizeof(ip4in6));
   __builtin_memcpy(key->dstip.s6_addr + sizeof(ip4in6), &ip4_dst,
                    sizeof(ip4_dst));
 
-  // store ICMP type in src port
+  // ICMP has no ports; stash type/code in the port slots.
   key->src_port = BPF_CORE_READ(icmphdr, type);
-  // store ICMP code in dst port
   key->dst_port = BPF_CORE_READ(icmphdr, code);
 
   key->proto = IPPROTO_ICMP;
@@ -587,215 +425,99 @@ process_icmp4(struct sk_buff *skb, statkey *key, pid_t pid) {
   return msglen;
 }
 
-/**
- * Process an ICMPv6 packet and populate the key with the relevant information.
- *
- * @param skb pointer to the socket buffer containing the ICMPv6 packet
- * @param key pointer to the statkey structure to be populated
- * @param pid process ID associated with the packet
- *
- * This function extracts source and destination IP addresses and ICMPv6 type
- * and code from the ICMPv6 packet, taking into account the IPv6 header. It
- * stores these details in the provided statkey structure, along with the
- * protocol type set to ICMPv6 and the associated process ID. It also returns
- * the length of the ICMPv6 message payload.
- *
- * @return the length of the ICMPv6 message payload
- * @throws none
- */
+// Returns the ICMPv6 payload length (IPv6 payload_len field).
 static inline __attribute__((always_inline)) size_t
 process_icmp6(struct sk_buff *skb, statkey *key, pid_t pid) {
-  struct icmp6hdr *icmphdr =
-      (struct icmp6hdr *)(BPF_CORE_READ(skb, head) +
-                          BPF_CORE_READ(skb, transport_header));
+  unsigned char *head = (unsigned char *)BPF_CORE_READ(skb, head);
+  __u16 nh_off = BPF_CORE_READ(skb, network_header);
+  __u16 th_off = BPF_CORE_READ(skb, transport_header);
 
-  struct ipv6hdr *iphdr =
-      (struct ipv6hdr *)(BPF_CORE_READ(skb, head) +
-                         BPF_CORE_READ(skb, network_header));
+  struct icmp6hdr *icmphdr = (struct icmp6hdr *)(head + th_off);
+  struct ipv6hdr *iphdr = (struct ipv6hdr *)(head + nh_off);
 
   BPF_CORE_READ_INTO(&key->srcip, iphdr, saddr);
   BPF_CORE_READ_INTO(&key->dstip, iphdr, daddr);
 
-  // store ICMP type in src port
+  // ICMP has no ports; stash type/code in the port slots.
   key->src_port = BPF_CORE_READ(icmphdr, icmp6_type);
-  // store ICMP code in dst port
   key->dst_port = BPF_CORE_READ(icmphdr, icmp6_code);
 
   key->proto = IPPROTO_ICMPV6;
   key->pid = pid;
 
-  size_t msglen = bpf_ntohs(BPF_CORE_READ(iphdr, payload_len));
-
-  return msglen;
+  return bpf_ntohs(BPF_CORE_READ(iphdr, payload_len));
 }
 
-/**
- * Process UDP socket information from a sk_buff and populate the key
- * structure.
- *
- * @param skb pointer to the socket buffer containing the UDP packet
- * @param key pointer to the statkey structure to be populated
- * @param pid process ID associated with the packet
- *
- * This function extracts source and destination IP addresses and ports from
- * the UDP packet, taking into account both IPv4 and IPv6 headers. It stores
- * these details in the provided statkey structure, along with the protocol
- * type set to UDP and the associated process ID. It also returns the length
- * of the UDP message.
- *
- * @throws none
- */
 static inline __attribute__((always_inline)) size_t
 process_udp_send(struct sk_buff *skb, statkey *key, pid_t pid) {
-  if (!process_udp_recv(false, skb, key, pid))
+  // Reuse the udphdr that process_udp_recv resolved.
+  struct udphdr *udphdr = NULL;
+  if (!process_udp_recv(false, skb, key, pid, &udphdr))
     return 0;
 
-  struct udphdr *udphdr =
-      (struct udphdr *)(BPF_CORE_READ(skb, head) +
-                        BPF_CORE_READ(skb, transport_header));
-  size_t msglen = bpf_ntohs(BPF_CORE_READ(udphdr, len));
-
-  return msglen;
+  return bpf_ntohs(BPF_CORE_READ(udphdr, len));
 }
 
-/**
- * get_cgroupid - reads the cgroup ID from the given struct cgroup
- *
- * This function reads the cgroup ID from the given struct cgroup and returns
- * it. The function works on kernels v4.10 and above.
- *
- * @cgrp: the struct cgroup to read the cgroup ID from
- *
- * Returns: the cgroup ID as an unsigned 64-bit integer
- *
- * get_cgroupid() comes from aquasecurity/tracee, license: Apache-2.0
- */
+#ifdef PKTSTAT_NEEDS_CGROUP_HELPERS
+
+// task->cgroups walk. Use only after confirming v1 mode. Inaccurate in
+// softirq context — prefer bpf_skb_cgroup_id() when an skb is available.
 static inline __attribute__((always_inline)) __u64
-get_cgroup_id(struct cgroup *cgrp) {
-  struct kernfs_node *kn = BPF_CORE_READ(cgrp, kn);
-
-  if (kn == NULL)
-    return 0;
-
-  __u64 id; // was union kernfs_node_id before 5.5, can read it as u64 in both
-            // situations
-
-  if (bpf_core_type_exists(union kernfs_node_id)) {
-    struct kernfs_node___older_v55 *kn_old = (void *)kn;
-    struct kernfs_node___rh8 *kn_rh8 = (void *)kn;
-
-    if (bpf_core_field_exists(kn_rh8->id)) {
-      // RHEL8 has both types declared: union and u64:
-      //     kn->id
-      //     rh->rh_kabi_hidden_172->id
-      // pointing to the same data
-      bpf_core_read(&id, sizeof(__u64), &kn_rh8->id);
-      id = id & 0xffffffff; // XXX: u32 is required
-    } else {
-      // all other regular kernels below v5.5
-      bpf_core_read(&id, sizeof(__u64), &kn_old->id);
-      id = id & 0xffffffff; // XXX: u32 is required
-    }
-  } else {
-    // kernel v5.5 and above
-    bpf_core_read(&id, sizeof(__u64), &kn->id);
-  }
-
-  return id;
-}
-
-/**
- * get_current_cgroup_id - get the current cgroup ID
- *
- * This function determines the current cgroup ID of the running process.
- * It first checks if the cgroup v2 pseudo-filesystem is present and
- * if so, calls the bpf_get_current_cgroup_id() helper function. If not,
- * it reads the cgroup ID from the task_struct structure. It returns the
- * cgroup ID as an unsigned 64-bit integer.
- *
- * @return the current cgroup ID as an unsigned 64-bit integer
- */
-static inline __attribute__((always_inline)) __u64 get_current_cgroup_id(void) {
-  __u32 zero_key = 0;
-  __u64 cgrpfs_magic = 0;
-
-  counter_cfg_value *cfg =
-      (counter_cfg_value *)bpf_map_lookup_elem(&counter_cfg, &zero_key);
-  if (cfg) {
-    cgrpfs_magic = cfg->cgrpfs_magic;
-  }
-
-  // cgroup v2
-  if (bpf_core_enum_value_exists(enum bpf_func_id,
-                                 BPF_FUNC_get_current_cgroup_id) &&
-      cgrpfs_magic == CGROUP2_FSMAGIC) {
-    return bpf_get_current_cgroup_id();
-  }
-
-  // cgroup v1
+get_current_cgroup_id_v1(void) {
   struct task_struct *task = (struct task_struct *)bpf_get_current_task();
   struct cgroup *cgroup = BPF_CORE_READ(task, cgroups, subsys[0], cgroup);
 
   return get_cgroup_id(cgroup);
 }
 
-/**
- * Process raw ICMP socket information for IPv4 and populate the key structure.
- *
- * @param sk pointer to the socket structure
- * @param msg pointer to the message header structure containing the packet
- * @param key pointer to the statkey structure to be populated
- * @param pid process ID associated with the packet
- *
- * This function extracts source and destination IPv4 addresses and ICMP type
- * and code from the raw socket message. It populates the provided statkey
- * structure with these details, converting IPv4 addresses to IPv6-mapped
- * format. The function only processes messages with the ICMP protocol.
- *
- * @return true if the key was successfully populated, false otherwise
- *
- * @throws none
- */
+// Umbrella helper; verifier folds the v1/v2 branch via cgrpfs_magic.
+static inline __attribute__((always_inline)) __u64 get_current_cgroup_id(void) {
+  if (bpf_core_enum_value_exists(enum bpf_func_id,
+                                 BPF_FUNC_get_current_cgroup_id) &&
+      cgrpfs_magic == CGROUP2_FSMAGIC) {
+    return bpf_get_current_cgroup_id();
+  }
+
+  return get_current_cgroup_id_v1();
+}
+
+#endif // PKTSTAT_NEEDS_CGROUP_HELPERS
+
 static inline __attribute__((always_inline)) bool
 process_raw_sendmsg4(struct sock *sk, struct msghdr *msg, statkey *key,
                      pid_t pid) {
   struct inet_sock *isk = (struct inet_sock *)sk;
 
-  // raw sockets have the protocol number in inet_num
+  // Raw socket protocol number lives in inet_num.
   __u16 proto = BPF_CORE_READ(isk, inet_num);
   if (proto != IPPROTO_ICMP) {
     return false;
   }
 
-  // populate comm and cgroupid only after confirming this is an ICMP socket
   if (pid > 0) {
     bpf_get_current_comm(&key->comm, sizeof(key->comm));
   }
   key->cgroupid = get_current_cgroup_id();
 
-  // msg_name is NULL for connected raw sockets; drop if destination unknown
+  // msg_name is NULL on connected raw sockets — destination is unknown.
   struct sockaddr_in *sin = (struct sockaddr_in *)BPF_CORE_READ(msg, msg_name);
   if (!sin) {
     return false;
   }
 
-  // convert to V4MAPPED address
   __be32 ip4_src = BPF_CORE_READ(isk, inet_saddr);
   __builtin_memcpy(key->srcip.s6_addr, ip4in6, sizeof(ip4in6));
   __builtin_memcpy(key->srcip.s6_addr + sizeof(ip4in6), &ip4_src,
                    sizeof(ip4_src));
 
-  // convert to V4MAPPED address
   __be32 ip4_dst = BPF_CORE_READ(sin, sin_addr.s_addr);
   __builtin_memcpy(key->dstip.s6_addr, ip4in6, sizeof(ip4in6));
   __builtin_memcpy(key->dstip.s6_addr + sizeof(ip4in6), &ip4_dst,
                    sizeof(ip4_dst));
 
-  // iov_base is a user-space pointer; use bpf_probe_read_user to read it.
-  // On kernels >= 6.0, single-buffer sends use ITER_UBUF (iter_type == 0)
-  // where iov_base is stored directly in __ubuf_iovec. For ITER_IOVEC
-  // (iter_type == 1), __iov is a pointer to an iovec array that must be
-  // dereferenced first. Reading __iov when ITER_UBUF is active would
+  // iov_base lives in user memory. Kernels ≥6.0 set ITER_UBUF for single
+  // buffer sends and store the pointer directly in __ubuf_iovec; ITER_IOVEC
+  // requires dereferencing __iov first. Reading __iov for ITER_UBUF would
   // misinterpret the data pointer as an iovec array pointer.
   void *iov_base;
   __u8 iter_type = BPF_CORE_READ(msg, msg_iter.iter_type);
@@ -816,9 +538,8 @@ process_raw_sendmsg4(struct sock *sk, struct msghdr *msg, statkey *key,
     return false;
   }
 
-  // store ICMP type in src port
+  // ICMP has no ports; stash type/code in the port slots.
   key->src_port = icmphdr.type;
-  // store ICMP code in dst port
   key->dst_port = icmphdr.code;
 
   key->proto = IPPROTO_ICMP;
@@ -827,57 +548,33 @@ process_raw_sendmsg4(struct sock *sk, struct msghdr *msg, statkey *key,
   return true;
 }
 
-/**
- * Process raw ICMP socket information for IPv6 and populate the key structure.
- *
- * @param sk pointer to the socket structure
- * @param msg pointer to the message header structure containing the packet
- * @param key pointer to the statkey structure to be populated
- * @param pid process ID associated with the packet
- *
- * This function extracts source and destination IPv6 addresses and ICMPv6 type
- * and code from the raw socket message. It populates the provided statkey
- * structure with these details. The function only processes messages with the
- * ICMPv6 protocol.
- *
- * @return true if the key was successfully populated, false otherwise
- *
- * @throws none
- */
 static inline __attribute__((always_inline)) bool
 process_raw_sendmsg6(struct sock *sk, struct msghdr *msg, statkey *key,
                      pid_t pid) {
   struct inet_sock *isk = (struct inet_sock *)sk;
 
-  // raw sockets have the protocol number in inet_num
+  // Raw socket protocol number lives in inet_num.
   __u16 proto = BPF_CORE_READ(isk, inet_num);
   if (proto != IPPROTO_ICMPV6) {
     return false;
   }
 
-  // populate comm and cgroupid only after confirming this is an ICMPv6 socket
   if (pid > 0) {
     bpf_get_current_comm(&key->comm, sizeof(key->comm));
   }
   key->cgroupid = get_current_cgroup_id();
 
-  // msg_name is NULL for connected raw sockets; drop if destination unknown
+  // msg_name is NULL on connected raw sockets — destination is unknown.
   struct sockaddr_in6 *sin6 =
       (struct sockaddr_in6 *)BPF_CORE_READ(msg, msg_name);
   if (!sin6) {
     return false;
   }
 
-  // read the IPv6 local address from the correct socket field
   BPF_CORE_READ_INTO(&key->srcip, sk, __sk_common.skc_v6_rcv_saddr);
   BPF_CORE_READ_INTO(&key->dstip, sin6, sin6_addr);
 
-  // iov_base is a user-space pointer; use bpf_probe_read_user to read it.
-  // On kernels >= 6.0, single-buffer sends use ITER_UBUF (iter_type == 0)
-  // where iov_base is stored directly in __ubuf_iovec. For ITER_IOVEC
-  // (iter_type == 1), __iov is a pointer to an iovec array that must be
-  // dereferenced first. Reading __iov when ITER_UBUF is active would
-  // misinterpret the data pointer as an iovec array pointer.
+  // See process_raw_sendmsg4 for the ITER_UBUF / ITER_IOVEC split rationale.
   void *iov_base;
   __u8 iter_type = BPF_CORE_READ(msg, msg_iter.iter_type);
   if (iter_type == ITER_UBUF) {
@@ -897,9 +594,8 @@ process_raw_sendmsg6(struct sock *sk, struct msghdr *msg, statkey *key,
     return false;
   }
 
-  // store ICMP type in src port
+  // ICMP has no ports; stash type/code in the port slots.
   key->src_port = icmp6hdr.icmp6_type;
-  // store ICMP code in dst port
   key->dst_port = icmp6hdr.icmp6_code;
 
   key->proto = IPPROTO_ICMPV6;
