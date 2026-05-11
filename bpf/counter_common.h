@@ -55,14 +55,118 @@ typedef struct sockinfo_t {
   pid_t pid;
 } sockinfo;
 
-// Patched at load time; verifier folds the v1/v2 branch into a constant.
-// Only emitted in translation units that actually call the cgroup helpers.
+// Patched at load time; verifier folds the v1/v2 branch.
 #ifdef PKTSTAT_NEEDS_CGROUP_HELPERS
 volatile const __u64 cgrpfs_magic = 0;
 #endif
 
 // V4MAPPED prefix: ::ffff:a.b.c.d
 static const __u8 ip4in6[] = {0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0xff, 0xff};
+
+// Map an IPv4 __be32 into the v4-in-v6 layout of an in6_addr.
+#define MAP_V4_IN_V6(v6, v4be32)                                               \
+  do {                                                                         \
+    __builtin_memcpy((v6).s6_addr, ip4in6, sizeof(ip4in6));                    \
+    __builtin_memcpy((v6).s6_addr + sizeof(ip4in6), &(v4be32),                 \
+                     sizeof(v4be32));                                          \
+  } while (0)
+
+// Switch-case helper for ESP/AH/GRE/OSPF parsers in process_ip4/process_ip6.
+#define CASE_PARSE(proto, parser)                                              \
+  case proto: {                                                                \
+    if ((parser)(transport, data_end, key) != OK) {                            \
+      return NOK;                                                              \
+    }                                                                          \
+    break;                                                                     \
+  }
+
+// Runtime ARP toggle for process_eth. Patched via cilium/ebpf Variables
+// before load; verifier folds the dispatch away when zero.
+volatile const __u8 arp_enabled = 1;
+
+// ESP: 32-bit SPI split across src_port (high 16) / dst_port (low 16).
+static inline __attribute__((always_inline)) int
+parse_esp(void *transport, void *data_end, statkey *key) {
+  if (unlikely(transport + 8 > data_end)) {
+    return NOK;
+  }
+  __u32 spi = bpf_ntohl(*(__be32 *)transport);
+  key->src_port = (__u16)(spi >> 16);
+  key->dst_port = (__u16)(spi & 0xFFFF);
+  return OK;
+}
+
+// AH: SPI at offset 4. Same port-slot split as ESP.
+static inline __attribute__((always_inline)) int
+parse_ah(void *transport, void *data_end, statkey *key) {
+  if (unlikely(transport + 12 > data_end)) {
+    return NOK;
+  }
+  __u32 spi = bpf_ntohl(*(__be32 *)(transport + 4));
+  key->src_port = (__u16)(spi >> 16);
+  key->dst_port = (__u16)(spi & 0xFFFF);
+  return OK;
+}
+
+// GRE base header only: src_port=inner-proto, dst_port=flags.
+static inline __attribute__((always_inline)) int
+parse_gre(void *transport, void *data_end, statkey *key) {
+  if (unlikely(transport + 4 > data_end)) {
+    return NOK;
+  }
+  __be16 flags = *(__be16 *)transport;
+  __be16 proto = *(__be16 *)(transport + 2);
+  key->src_port = bpf_ntohs(proto);
+  key->dst_port = bpf_ntohs(flags);
+  return OK;
+}
+
+// OSPF: src_port=type (1=Hello..5=LSAck), dst_port=version (2 or 3).
+static inline __attribute__((always_inline)) int
+parse_ospf(void *transport, void *data_end, statkey *key) {
+  if (unlikely(transport + 2 > data_end)) {
+    return NOK;
+  }
+  __u8 *o = transport;
+  key->src_port = o[1];
+  key->dst_port = o[0];
+  return OK;
+}
+
+// ARP IPv4-over-Ethernet only. SPA→srcip, TPA→dstip, src_port=opcode.
+// Inverse ARP (op 8/9), RARP (EtherType 0x8035), and InfiniBand ARP
+// (htype=32) are intentionally excluded — out of scope.
+// SPA/TPA loads use __builtin_memcpy: unaligned offsets inside the payload.
+static inline __attribute__((always_inline)) bool
+parse_arp(void *l3, void *data_end, statkey *key) {
+  struct arphdr *arp = l3;
+  if (unlikely((void *)arp + sizeof(*arp) > data_end)) {
+    return false;
+  }
+
+  if (bpf_ntohs(arp->ar_hrd) != 1) return false;
+  if (bpf_ntohs(arp->ar_pro) != ETH_P_IP) return false;
+  if (arp->ar_hln != 6 || arp->ar_pln != 4) return false;
+
+  // Payload: sha[6] spa[4] tha[6] tpa[4] = 20 bytes.
+  void *payload = (void *)arp + sizeof(*arp);
+  if (unlikely(payload + 20 > data_end)) {
+    return false;
+  }
+
+  __be32 spa, tpa;
+  __builtin_memcpy(&spa, payload + 6,  4);
+  __builtin_memcpy(&tpa, payload + 16, 4);
+
+  __builtin_memset(key, 0, sizeof(*key));
+  MAP_V4_IN_V6(key->srcip, spa);
+  MAP_V4_IN_V6(key->dstip, tpa);
+
+  key->proto    = PROTO_ARP_FAKE;
+  key->src_port = bpf_ntohs(arp->ar_op);
+  key->dst_port = 0;
+  return true;
+}
 
 static inline __attribute__((always_inline)) int
 process_ip4(struct iphdr *ip4, void *data_end, statkey *key) {
@@ -83,12 +187,8 @@ process_ip4(struct iphdr *ip4, void *data_end, statkey *key) {
 
   void *transport = (void *)ip4 + ip4_hdr_len;
 
-  __builtin_memcpy(key->srcip.s6_addr, ip4in6, sizeof(ip4in6));
-  __builtin_memcpy(key->srcip.s6_addr + sizeof(ip4in6), &ip4->saddr,
-                   sizeof(ip4->saddr));
-  __builtin_memcpy(key->dstip.s6_addr, ip4in6, sizeof(ip4in6));
-  __builtin_memcpy(key->dstip.s6_addr + sizeof(ip4in6), &ip4->daddr,
-                   sizeof(ip4->daddr));
+  MAP_V4_IN_V6(key->srcip, ip4->saddr);
+  MAP_V4_IN_V6(key->dstip, ip4->daddr);
 
   key->proto = ip4->protocol;
 
@@ -121,6 +221,10 @@ process_ip4(struct iphdr *ip4, void *data_end, statkey *key) {
     key->dst_port = icmp->code;
     break;
   }
+    CASE_PARSE(IPPROTO_ESP, parse_esp)
+    CASE_PARSE(IPPROTO_AH, parse_ah)
+    CASE_PARSE(IPPROTO_GRE, parse_gre)
+    CASE_PARSE(IPPROTO_OSPF, parse_ospf)
   }
 
   return OK;
@@ -135,14 +239,11 @@ process_ip6(struct ipv6hdr *ip6, void *data_end, statkey *key) {
   key->srcip = ip6->saddr;
   key->dstip = ip6->daddr;
 
-  // Walk ext headers: HopByHop/Routing/DstOpts size = (hdr_ext_len+1)*8;
-  // Fragment is fixed 8 bytes. next_header lives at offset 0.
+  // Ext-header sizes: HopByHop/Routing/DstOpts = (hdr_ext_len+1)*8, Fragment = 8.
   __u8 nexthdr = ip6->nexthdr;
   void *transport = (void *)ip6 + sizeof(*ip6);
 
-  // Cap at 2 iterations: real traffic almost never has >1 ext header.
-  // Chained ext headers beyond that attribute to the depth-1 next_header
-  // (e.g. IPPROTO_ROUTING) rather than the actual transport. Intentional.
+  // Cap at 2: deeper chains attribute to the last ext header (intentional).
 #pragma unroll 2
   for (int i = 0; i < 2; i++) {
     if (likely(nexthdr != IPPROTO_HOPOPTS && nexthdr != IPPROTO_ROUTING &&
@@ -157,10 +258,8 @@ process_ip6(struct ipv6hdr *ip6, void *data_end, statkey *key) {
     } else {
       if (unlikely(transport + 2 > data_end))
         return NOK;
-      // (next_header, hdr_ext_len) as a network-order u16.
-      __u16 hdr_pair = bpf_ntohs(*(__u16 *)transport);
-      nexthdr = hdr_pair >> 8;
-      __u8 hdrlen = (__u8)hdr_pair;
+      nexthdr = ((__u8 *)transport)[0];
+      __u8 hdrlen = ((__u8 *)transport)[1];
       transport += ((__u32)(hdrlen + 1) * 8);
     }
   }
@@ -196,6 +295,10 @@ process_ip6(struct ipv6hdr *ip6, void *data_end, statkey *key) {
     key->dst_port = icmp->icmp6_code;
     break;
   }
+    CASE_PARSE(IPPROTO_ESP, parse_esp)
+    CASE_PARSE(IPPROTO_AH, parse_ah)
+    CASE_PARSE(IPPROTO_GRE, parse_gre)
+    CASE_PARSE(IPPROTO_OSPF, parse_ospf)
   }
 
   return OK;
@@ -211,9 +314,8 @@ static inline __attribute__((always_inline)) void update_val(statkey *key,
     return;
   }
 
-  // Key existence is global; per-CPU slots are zero-initialized on first
-  // insert. So if BPF_NOEXIST loses the race, our slot is guaranteed (0,0)
-  // and the retry +=  produces correct sums after userspace aggregation.
+  // BPF_NOEXIST race: losing inserter sees its own zeroed per-CPU slot,
+  // retry += gives correct sums after userspace aggregation.
   statvalue initval = {.packets = 1, .bytes = size};
   if (unlikely(bpf_map_update_elem(&pkt_count, key, &initval, BPF_NOEXIST) !=
                0)) {
@@ -248,9 +350,34 @@ process_eth(void *data, void *data_end, __u64 pkt_len) {
     return;
   }
 
+  __u16 h_proto = bpf_ntohs(eth->h_proto);
+  void *l3 = (void *)eth + sizeof(*eth);
+
+  // Unwrap up to two VLAN tags (802.1Q or QinQ). vlan_hdr is 4 bytes:
+  // (tci:16, encapsulated_proto:16); the encapsulated_proto replaces h_proto.
+#pragma unroll 2
+  for (int i = 0; i < 2; i++) {
+    if (h_proto != ETH_P_8021Q && h_proto != ETH_P_8021AD) {
+      break;
+    }
+    if (unlikely(l3 + 4 > data_end)) {
+      return;
+    }
+    h_proto = bpf_ntohs(*(__be16 *)(l3 + 2));
+    l3 += 4;
+  }
+
+  // ARP is L2-only; parse_arp zeroes the key itself.
+  if (arp_enabled && h_proto == ETH_P_ARP) {
+    statkey key;
+    if (parse_arp(l3, data_end, &key)) {
+      update_val(&key, pkt_len);
+    }
+    return;
+  }
+
   statkey key;
-  if (!process_l3((void *)eth + sizeof(*eth), data_end,
-                  bpf_ntohs(eth->h_proto), &key)) {
+  if (!process_l3(l3, data_end, h_proto, &key)) {
     return;
   }
 
@@ -277,22 +404,17 @@ static inline __attribute__((always_inline)) bool
 process_tcp(bool receive, struct sock *sk, statkey *key, pid_t pid) {
   __u16 family = BPF_CORE_READ(sk, __sk_common.skc_family);
 
-  // Socket holds local in skc_(rcv_)saddr/skc_num, remote in skc_daddr/dport.
-  // Pick destinations up-front for the receive flow instead of swapping.
+  // sk holds local in skc_(rcv_)saddr/skc_num, remote in skc_daddr/dport.
+  // Receive-direction flips local→dst / remote→src up-front.
   struct in6_addr *src = receive ? &key->dstip : &key->srcip;
   struct in6_addr *dst = receive ? &key->srcip : &key->dstip;
 
   switch (family) {
   case AF_INET: {
     __be32 ip4_local = BPF_CORE_READ(sk, __sk_common.skc_rcv_saddr);
-    __builtin_memcpy(src->s6_addr, ip4in6, sizeof(ip4in6));
-    __builtin_memcpy(src->s6_addr + sizeof(ip4in6), &ip4_local,
-                     sizeof(ip4_local));
-
     __be32 ip4_remote = BPF_CORE_READ(sk, __sk_common.skc_daddr);
-    __builtin_memcpy(dst->s6_addr, ip4in6, sizeof(ip4in6));
-    __builtin_memcpy(dst->s6_addr + sizeof(ip4in6), &ip4_remote,
-                     sizeof(ip4_remote));
+    MAP_V4_IN_V6(*src, ip4_local);
+    MAP_V4_IN_V6(*dst, ip4_remote);
     break;
   }
   case AF_INET6:
@@ -325,8 +447,7 @@ process_tcp(bool receive, struct sock *sk, statkey *key, pid_t pid) {
   return true;
 }
 
-// On success, optionally publishes the parsed udphdr via udphdr_out (NULL
-// to skip). Caller must check the return value before dereferencing it.
+// On success, publishes the parsed udphdr via udphdr_out (NULL to skip).
 static inline __attribute__((always_inline)) bool
 process_udp_recv(bool receive, struct sk_buff *skb, statkey *key, pid_t pid,
                  struct udphdr **udphdr_out) {
@@ -347,14 +468,9 @@ process_udp_recv(bool receive, struct sk_buff *skb, statkey *key, pid_t pid,
   case ETH_P_IP: {
     struct iphdr *iphdr = (struct iphdr *)(head + nh_off);
     __be32 ip4_pkt_src = BPF_CORE_READ(iphdr, saddr);
-    __builtin_memcpy(ip_src->s6_addr, ip4in6, sizeof(ip4in6));
-    __builtin_memcpy(ip_src->s6_addr + sizeof(ip4in6), &ip4_pkt_src,
-                     sizeof(ip4_pkt_src));
-
     __be32 ip4_pkt_dst = BPF_CORE_READ(iphdr, daddr);
-    __builtin_memcpy(ip_dst->s6_addr, ip4in6, sizeof(ip4in6));
-    __builtin_memcpy(ip_dst->s6_addr + sizeof(ip4in6), &ip4_pkt_dst,
-                     sizeof(ip4_pkt_dst));
+    MAP_V4_IN_V6(*ip_src, ip4_pkt_src);
+    MAP_V4_IN_V6(*ip_dst, ip4_pkt_dst);
     break;
   }
   case ETH_P_IPV6: {
@@ -399,14 +515,9 @@ process_icmp4(struct sk_buff *skb, statkey *key, pid_t pid) {
   struct iphdr *iphdr = (struct iphdr *)(head + nh_off);
 
   __be32 ip4_src = BPF_CORE_READ(iphdr, saddr);
-  __builtin_memcpy(key->srcip.s6_addr, ip4in6, sizeof(ip4in6));
-  __builtin_memcpy(key->srcip.s6_addr + sizeof(ip4in6), &ip4_src,
-                   sizeof(ip4_src));
-
   __be32 ip4_dst = BPF_CORE_READ(iphdr, daddr);
-  __builtin_memcpy(key->dstip.s6_addr, ip4in6, sizeof(ip4in6));
-  __builtin_memcpy(key->dstip.s6_addr + sizeof(ip4in6), &ip4_dst,
-                   sizeof(ip4_dst));
+  MAP_V4_IN_V6(key->srcip, ip4_src);
+  MAP_V4_IN_V6(key->dstip, ip4_dst);
 
   // ICMP has no ports; stash type/code in the port slots.
   key->src_port = BPF_CORE_READ(icmphdr, type);
@@ -445,6 +556,90 @@ process_icmp6(struct sk_buff *skb, statkey *key, pid_t pid) {
   return bpf_ntohs(BPF_CORE_READ(iphdr, payload_len));
 }
 
+// Fill `key` from an skb for ESP/AH/GRE/OSPF; returns 0 to skip everything else
+// (TCP/UDP/ICMP have their own kprobes — counting here would double-count).
+//
+// __noinline: inlining tripped "R3 !read_ok" in the verifier on kernel 6.12.
+static __attribute__((noinline)) size_t
+process_l4_skb(struct sk_buff *skb, statkey *key, pid_t pid) {
+  unsigned char *head = (unsigned char *)BPF_CORE_READ(skb, head);
+  __u16 nh_off = BPF_CORE_READ(skb, network_header);
+  __u16 proto_be = BPF_CORE_READ(skb, protocol);
+
+  __u8 ip_proto;
+  size_t ip_payload_len;
+
+  switch (bpf_ntohs(proto_be)) {
+  case ETH_P_IP: {
+    struct iphdr *iphdr = (struct iphdr *)(head + nh_off);
+    ip_proto = BPF_CORE_READ(iphdr, protocol);
+
+    if (ip_proto != IPPROTO_ESP && ip_proto != IPPROTO_AH &&
+        ip_proto != IPPROTO_GRE && ip_proto != IPPROTO_OSPF) {
+      return 0;
+    }
+
+    __be32 ip4_src = BPF_CORE_READ(iphdr, saddr);
+    __be32 ip4_dst = BPF_CORE_READ(iphdr, daddr);
+    MAP_V4_IN_V6(key->srcip, ip4_src);
+    MAP_V4_IN_V6(key->dstip, ip4_dst);
+
+    __u16 tot_len = bpf_ntohs(BPF_CORE_READ(iphdr, tot_len));
+    __u16 ihl_bytes = (__u16)(BPF_CORE_READ_BITFIELD_PROBED(iphdr, ihl) * 4);
+    ip_payload_len = (ihl_bytes <= tot_len) ? (size_t)(tot_len - ihl_bytes) : 0;
+    break;
+  }
+  case ETH_P_IPV6: {
+    struct ipv6hdr *iphdr = (struct ipv6hdr *)(head + nh_off);
+    ip_proto = BPF_CORE_READ(iphdr, nexthdr);
+
+    // Walk up to 2 ext headers via probe_read so ESP/AH/GRE/OSPF behind
+    // HopByHop/Routing/Fragment/DstOpts attribute correctly.
+    __u16 ext_skip = 0;
+#pragma unroll 2
+    for (int i = 0; i < 2; i++) {
+      if (likely(ip_proto != IPPROTO_HOPOPTS && ip_proto != IPPROTO_ROUTING &&
+                 ip_proto != IPPROTO_FRAGMENT && ip_proto != IPPROTO_DSTOPTS)) {
+        break;
+      }
+      __u8 pair[2];
+      if (bpf_probe_read_kernel(pair, 2, head + nh_off + sizeof(*iphdr) +
+                                            ext_skip) != 0) {
+        return 0;
+      }
+      if (ip_proto == IPPROTO_FRAGMENT) {
+        ip_proto = pair[0];
+        ext_skip += 8;
+      } else {
+        ip_proto = pair[0];
+        ext_skip += ((__u16)(pair[1] + 1) * 8);
+      }
+    }
+
+    if (ip_proto != IPPROTO_ESP && ip_proto != IPPROTO_AH &&
+        ip_proto != IPPROTO_GRE && ip_proto != IPPROTO_OSPF) {
+      return 0;
+    }
+
+    BPF_CORE_READ_INTO(&key->srcip, iphdr, saddr);
+    BPF_CORE_READ_INTO(&key->dstip, iphdr, daddr);
+
+    __u16 payload_len = bpf_ntohs(BPF_CORE_READ(iphdr, payload_len));
+    ip_payload_len = (ext_skip <= payload_len) ? (size_t)(payload_len - ext_skip)
+                                               : 0;
+    break;
+  }
+  default:
+    return 0;
+  }
+
+  key->proto = ip_proto;
+  key->pid = pid;
+  // Port slots left zero; SPI/type/flags decode via probe_read deferred.
+
+  return ip_payload_len;
+}
+
 static inline __attribute__((always_inline)) size_t
 process_udp_send(struct sk_buff *skb, statkey *key, pid_t pid) {
   // Reuse the udphdr that process_udp_recv resolved.
@@ -457,8 +652,7 @@ process_udp_send(struct sk_buff *skb, statkey *key, pid_t pid) {
 
 #ifdef PKTSTAT_NEEDS_CGROUP_HELPERS
 
-// task->cgroups walk. Use only after confirming v1 mode. Inaccurate in
-// softirq context — prefer bpf_skb_cgroup_id() when an skb is available.
+// v1 task-walk. Wrong in softirq — prefer bpf_skb_cgroup_id() when skb exists.
 static inline __attribute__((always_inline)) __u64
 get_current_cgroup_id_v1(void) {
   struct task_struct *task = (struct task_struct *)bpf_get_current_task();
@@ -476,127 +670,6 @@ static inline __attribute__((always_inline)) __u64 get_current_cgroup_id(void) {
   }
 
   return get_current_cgroup_id_v1();
-}
-
-static inline __attribute__((always_inline)) bool
-process_raw_sendmsg4(struct sock *sk, struct msghdr *msg, statkey *key,
-                     pid_t pid) {
-  struct inet_sock *isk = (struct inet_sock *)sk;
-
-  // Raw socket protocol number lives in inet_num.
-  __u16 proto = BPF_CORE_READ(isk, inet_num);
-  if (proto != IPPROTO_ICMP) {
-    return false;
-  }
-
-  if (pid > 0) {
-    bpf_get_current_comm(&key->comm, sizeof(key->comm));
-  }
-  key->cgroupid = get_current_cgroup_id();
-
-  // msg_name is NULL on connected raw sockets — destination is unknown.
-  struct sockaddr_in *sin = (struct sockaddr_in *)BPF_CORE_READ(msg, msg_name);
-  if (!sin) {
-    return false;
-  }
-
-  __be32 ip4_src = BPF_CORE_READ(isk, inet_saddr);
-  __builtin_memcpy(key->srcip.s6_addr, ip4in6, sizeof(ip4in6));
-  __builtin_memcpy(key->srcip.s6_addr + sizeof(ip4in6), &ip4_src,
-                   sizeof(ip4_src));
-
-  __be32 ip4_dst = BPF_CORE_READ(sin, sin_addr.s_addr);
-  __builtin_memcpy(key->dstip.s6_addr, ip4in6, sizeof(ip4in6));
-  __builtin_memcpy(key->dstip.s6_addr + sizeof(ip4in6), &ip4_dst,
-                   sizeof(ip4_dst));
-
-  // iov_base lives in user memory. Kernels ≥6.0 set ITER_UBUF for single
-  // buffer sends and store the pointer directly in __ubuf_iovec; ITER_IOVEC
-  // requires dereferencing __iov first. Reading __iov for ITER_UBUF would
-  // misinterpret the data pointer as an iovec array pointer.
-  void *iov_base;
-  __u8 iter_type = BPF_CORE_READ(msg, msg_iter.iter_type);
-  if (iter_type == ITER_UBUF) {
-    iov_base = (void *)BPF_CORE_READ(msg, msg_iter.__ubuf_iovec.iov_base);
-  } else {
-    struct iovec *iov = (struct iovec *)BPF_CORE_READ(msg, msg_iter.__iov);
-    if (!iov) {
-      return false;
-    }
-    iov_base = (void *)BPF_CORE_READ(iov, iov_base);
-  }
-  if (!iov_base) {
-    return false;
-  }
-  struct icmphdr icmphdr;
-  if (bpf_probe_read_user(&icmphdr, sizeof(icmphdr), iov_base) != 0) {
-    return false;
-  }
-
-  // ICMP has no ports; stash type/code in the port slots.
-  key->src_port = icmphdr.type;
-  key->dst_port = icmphdr.code;
-
-  key->proto = IPPROTO_ICMP;
-  key->pid = pid;
-
-  return true;
-}
-
-static inline __attribute__((always_inline)) bool
-process_raw_sendmsg6(struct sock *sk, struct msghdr *msg, statkey *key,
-                     pid_t pid) {
-  struct inet_sock *isk = (struct inet_sock *)sk;
-
-  // Raw socket protocol number lives in inet_num.
-  __u16 proto = BPF_CORE_READ(isk, inet_num);
-  if (proto != IPPROTO_ICMPV6) {
-    return false;
-  }
-
-  if (pid > 0) {
-    bpf_get_current_comm(&key->comm, sizeof(key->comm));
-  }
-  key->cgroupid = get_current_cgroup_id();
-
-  // msg_name is NULL on connected raw sockets — destination is unknown.
-  struct sockaddr_in6 *sin6 =
-      (struct sockaddr_in6 *)BPF_CORE_READ(msg, msg_name);
-  if (!sin6) {
-    return false;
-  }
-
-  BPF_CORE_READ_INTO(&key->srcip, sk, __sk_common.skc_v6_rcv_saddr);
-  BPF_CORE_READ_INTO(&key->dstip, sin6, sin6_addr);
-
-  // See process_raw_sendmsg4 for the ITER_UBUF / ITER_IOVEC split rationale.
-  void *iov_base;
-  __u8 iter_type = BPF_CORE_READ(msg, msg_iter.iter_type);
-  if (iter_type == ITER_UBUF) {
-    iov_base = (void *)BPF_CORE_READ(msg, msg_iter.__ubuf_iovec.iov_base);
-  } else {
-    struct iovec *iov = (struct iovec *)BPF_CORE_READ(msg, msg_iter.__iov);
-    if (!iov) {
-      return false;
-    }
-    iov_base = (void *)BPF_CORE_READ(iov, iov_base);
-  }
-  if (!iov_base) {
-    return false;
-  }
-  struct icmp6hdr icmp6hdr;
-  if (bpf_probe_read_user(&icmp6hdr, sizeof(icmp6hdr), iov_base) != 0) {
-    return false;
-  }
-
-  // ICMP has no ports; stash type/code in the port slots.
-  key->src_port = icmp6hdr.icmp6_type;
-  key->dst_port = icmp6hdr.icmp6_code;
-
-  key->proto = IPPROTO_ICMPV6;
-  key->pid = pid;
-
-  return true;
 }
 
 #endif // PKTSTAT_NEEDS_CGROUP_HELPERS

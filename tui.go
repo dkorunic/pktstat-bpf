@@ -263,7 +263,7 @@ func updateStatsTable(app *tview.Application, table *tview.Table, tableSortIdx *
 
 				// populate src, dst, src port, dst port, type and code
 				switch v.Proto {
-				case "ICMPv4", "IPv6-ICMP":
+				case protoICMPv4, protoICMPv6:
 					table.SetCell(i+1, 4, tview.NewTableCell(v.SrcIP.String()).
 						SetTextColor(tcell.ColorWhite).
 						SetExpansion(1))
@@ -277,6 +277,71 @@ func updateStatsTable(app *tview.Application, table *tview.Table, tableSortIdx *
 						SetExpansion(1))
 
 					table.SetCell(i+1, 7, tview.NewTableCell(strconv.Itoa(int(v.DstPort))).
+						SetTextColor(tcell.ColorWhite).
+						SetExpansion(1))
+				case protoESP, protoAH:
+					table.SetCell(i+1, 4, tview.NewTableCell(v.SrcIP.String()).
+						SetTextColor(tcell.ColorWhite).
+						SetExpansion(1))
+
+					table.SetCell(i+1, 5, tview.NewTableCell(v.DstIP.String()).
+						SetTextColor(tcell.ColorWhite).
+						SetExpansion(1))
+
+					spi := uint32(v.SrcPort)<<16 | uint32(v.DstPort)
+					table.SetCell(i+1, 6, tview.NewTableCell("0x"+strconv.FormatUint(uint64(spi), 16)).
+						SetTextColor(tcell.ColorWhite).
+						SetExpansion(1))
+
+					table.SetCell(i+1, 7, tview.NewTableCell("").
+						SetTextColor(tcell.ColorWhite).
+						SetExpansion(1))
+				case protoGRE:
+					table.SetCell(i+1, 4, tview.NewTableCell(v.SrcIP.String()).
+						SetTextColor(tcell.ColorWhite).
+						SetExpansion(1))
+
+					table.SetCell(i+1, 5, tview.NewTableCell(v.DstIP.String()).
+						SetTextColor(tcell.ColorWhite).
+						SetExpansion(1))
+
+					table.SetCell(i+1, 6, tview.NewTableCell(greInnerName(v.SrcPort)).
+						SetTextColor(tcell.ColorWhite).
+						SetExpansion(1))
+
+					table.SetCell(i+1, 7, tview.NewTableCell(fmt.Sprintf("0x%04x", v.DstPort)).
+						SetTextColor(tcell.ColorWhite).
+						SetExpansion(1))
+				case protoOSPF:
+					table.SetCell(i+1, 4, tview.NewTableCell(v.SrcIP.String()).
+						SetTextColor(tcell.ColorWhite).
+						SetExpansion(1))
+
+					table.SetCell(i+1, 5, tview.NewTableCell(v.DstIP.String()).
+						SetTextColor(tcell.ColorWhite).
+						SetExpansion(1))
+
+					table.SetCell(i+1, 6, tview.NewTableCell(ospfTypeName(v.SrcPort)).
+						SetTextColor(tcell.ColorWhite).
+						SetExpansion(1))
+
+					table.SetCell(i+1, 7, tview.NewTableCell("v"+strconv.Itoa(int(v.DstPort))).
+						SetTextColor(tcell.ColorWhite).
+						SetExpansion(1))
+				case protoARP:
+					table.SetCell(i+1, 4, tview.NewTableCell(v.SrcIP.String()).
+						SetTextColor(tcell.ColorWhite).
+						SetExpansion(1))
+
+					table.SetCell(i+1, 5, tview.NewTableCell(v.DstIP.String()).
+						SetTextColor(tcell.ColorWhite).
+						SetExpansion(1))
+
+					table.SetCell(i+1, 6, tview.NewTableCell(arpOpName(v.SrcPort)).
+						SetTextColor(tcell.ColorWhite).
+						SetExpansion(1))
+
+					table.SetCell(i+1, 7, tview.NewTableCell("").
 						SetTextColor(tcell.ColorWhite).
 						SetExpansion(1))
 				default:

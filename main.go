@@ -114,6 +114,7 @@ func main() {
 		if err := applyCgrpfsMagic(cgroupSkbSpec, cgroupFsMagic); err != nil {
 			log.Printf("Unable to set cgrpfs_magic on CGroupSKB spec: %v", err)
 		}
+		applyMaxEntries(cgroupSkbSpec)
 
 		var objsCgroupSkb cgroupSkbObjects
 		if err := cgroupSkbSpec.LoadAndAssign(&objsCgroupSkb, nil); err != nil {
@@ -168,6 +169,7 @@ func main() {
 		if err := applyCgrpfsMagic(kprobeSpec, cgroupFsMagic); err != nil {
 			log.Printf("Unable to set cgrpfs_magic on KProbe spec: %v", err)
 		}
+		applyMaxEntries(kprobeSpec)
 
 		var objsKprobe kprobeObjects
 		if err := kprobeSpec.LoadAndAssign(&objsKprobe, nil); err != nil {
@@ -197,6 +199,7 @@ func main() {
 		hooks := []kprobeHook{
 			{kprobe: "tcp_sendmsg", prog: objsKprobe.TcpSendmsg},
 			{kprobe: "tcp_cleanup_rbuf", prog: objsKprobe.TcpCleanupRbuf},
+			{kprobe: "tcp_retransmit_skb", prog: objsKprobe.TcpRetransmitSkb},
 			{kprobe: "ip_send_skb", prog: objsKprobe.IpSendSkb},
 			{kprobe: "ip6_send_skb", prog: objsKprobe.Ip6SendSkb},
 			{kprobe: "skb_consume_udp", prog: objsKprobe.SkbConsumeUdp},
@@ -204,8 +207,10 @@ func main() {
 			{kprobe: "icmp6_send", prog: objsKprobe.Icmp6Send},
 			{kprobe: "icmp_rcv", prog: objsKprobe.IcmpRcv},
 			{kprobe: "icmpv6_rcv", prog: objsKprobe.Icmpv6Rcv},
-			//{kprobe: "raw_sendmsg", prog: objsKprobe.RawSendmsg},
-			//{kprobe: "rawv6_sendmsg", prog: objsKprobe.Rawv6Sendmsg},
+			{kprobe: "ip_local_out", prog: objsKprobe.IpLocalOut},
+			{kprobe: "ip6_local_out", prog: objsKprobe.Ip6LocalOut},
+			{kprobe: "ip_rcv", prog: objsKprobe.IpRcv},
+			{kprobe: "ipv6_rcv", prog: objsKprobe.Ipv6Rcv},
 		}
 
 		cGroupCacheInit()
@@ -228,8 +233,16 @@ func main() {
 		}
 
 		// Load XDP eBPF object
+		xdpSpec, err := loadXdp()
+		if err != nil {
+			log.Fatalf("Error loading XDP eBPF spec: %v", err)
+		}
+
+		applyMaxEntries(xdpSpec)
+		applyArpEnabled(xdpSpec)
+
 		var objsXDP xdpObjects
-		if err := loadXdpObjects(&objsXDP, nil); err != nil {
+		if err := xdpSpec.LoadAndAssign(&objsXDP, nil); err != nil {
 			log.Fatalf("Error loading XDP eBPF objects: %v", err)
 		}
 
@@ -247,8 +260,16 @@ func main() {
 		}
 
 		// Load TC eBPF object
+		tcSpec, err := loadTc()
+		if err != nil {
+			log.Fatalf("Error loading TC eBPF spec: %v", err)
+		}
+
+		applyMaxEntries(tcSpec)
+		applyArpEnabled(tcSpec)
+
 		var objsTC tcObjects
-		if err := loadTcObjects(&objsTC, nil); err != nil {
+		if err := tcSpec.LoadAndAssign(&objsTC, nil); err != nil {
 			log.Fatalf("Error loading TC eBPF objects: %v", err)
 		}
 
@@ -324,4 +345,32 @@ func applyCgrpfsMagic(spec *ebpf.CollectionSpec, magic uint64) error {
 	}
 
 	return v.Set(magic)
+}
+
+// applyMaxEntries patches the pkt_count map's MaxEntries from the --max-entries
+// flag. A zero value leaves the compile-time MAX_ENTRIES default in place.
+// Specs without a pkt_count map are silently skipped.
+func applyMaxEntries(spec *ebpf.CollectionSpec) {
+	if *maxEntries == 0 {
+		return
+	}
+
+	if m, ok := spec.Maps["pkt_count"]; ok && m != nil {
+		m.MaxEntries = uint32(*maxEntries)
+	}
+}
+
+// applyArpEnabled patches the BPF-side arp_enabled toggle. Only meaningful for
+// specs that link counter_common.h (tc, xdp); silently no-ops elsewhere.
+func applyArpEnabled(spec *ebpf.CollectionSpec) {
+	if !*noARP {
+		return
+	}
+
+	v, ok := spec.Variables["arp_enabled"]
+	if !ok || v == nil {
+		return
+	}
+
+	_ = v.Set(uint8(0))
 }

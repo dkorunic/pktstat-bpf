@@ -51,8 +51,7 @@ struct kernfs_node___rh8 {
   };
 };
 
-// Adapted from aquasecurity/tracee, Apache-2.0. Include after vmlinux.h
-// and bpf_core_read.h.
+// Adapted from aquasecurity/tracee (Apache-2.0).
 static inline __attribute__((always_inline)) __u64
 get_cgroup_id(struct cgroup *cgrp) {
   struct kernfs_node *kn = BPF_CORE_READ(cgrp, kn);
@@ -63,13 +62,13 @@ get_cgroup_id(struct cgroup *cgrp) {
   __u64 id;
 
   if (bpf_core_type_exists(union kernfs_node_id)) {
-    // Pre-5.5: id is a union; RHEL8 backports the u64 alongside the union.
+    // Pre-5.5: id is a union; RHEL8 backports a u64 alongside it.
     struct kernfs_node___older_v55 *kn_old = (void *)kn;
     struct kernfs_node___rh8 *kn_rh8 = (void *)kn;
 
     if (bpf_core_field_exists(kn_rh8->id)) {
       bpf_core_read(&id, sizeof(__u64), &kn_rh8->id);
-      id = id & 0xffffffff; // u32 portion only
+      id = id & 0xffffffff; // u32 portion
     } else {
       bpf_core_read(&id, sizeof(__u64), &kn_old->id);
       id = id & 0xffffffff;

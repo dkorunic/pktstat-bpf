@@ -49,5 +49,28 @@
 #define IPPROTO_FRAGMENT 44
 #define IPPROTO_DSTOPTS 60
 
+// ARP EtherType (RFC 826).
+#define ETH_P_ARP 0x0806
+
+// VLAN tag EtherTypes (802.1Q single, 802.1ad outer).
+#define ETH_P_8021Q  0x8100
+#define ETH_P_8021AD 0x88A8
+
+// IP protocols decoded beyond TCP/UDP/ICMP.
+#define IPPROTO_GRE  47
+#define IPPROTO_ESP  50
+#define IPPROTO_AH   51
+#define IPPROTO_OSPF 89
+
+// Synthetic statkey.proto values (254 IANA-reserved, 253 unassigned).
+// 254=ARP (L2-only). 253=TCP retransmission.
+#define PROTO_ARP_FAKE  254
+#define PROTO_TCP_RETX  253
+
+// GRE flag bits (RFC 2784/2890). Stored in dst_port by parse_gre.
+#define GRE_FLAG_CHECKSUM 0x8000
+#define GRE_FLAG_KEY      0x2000
+#define GRE_FLAG_SEQUENCE 0x1000
+
 #define likely(x) __builtin_expect(!!(x), 1)
 #define unlikely(x) __builtin_expect(!!(x), 0)

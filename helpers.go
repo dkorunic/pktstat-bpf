@@ -24,6 +24,7 @@ package main
 import (
 	"net"
 	"net/netip"
+	"strconv"
 	"strings"
 )
 
@@ -87,6 +88,8 @@ var protoNames = func() [256]string {
 		141: "WESP",
 		142: "ROHC",
 		143: "Ethernet",
+		253: "TCP-RETX", // synthetic; TCP retransmission
+		254: "ARP",      // synthetic; not a real IP protocol
 		255: "Fragment",
 	} {
 		a[k] = v
@@ -105,6 +108,48 @@ func protoToString(p uint8) string {
 	}
 
 	return "Unknown"
+}
+
+// ospfTypeNames indexes 1..5 to OSPF packet type names (RFC 2328 §A.3).
+var ospfTypeNames = [...]string{"", "Hello", "DBDesc", "LSReq", "LSUpd", "LSAck"}
+
+// ospfTypeName returns the name for an OSPF packet type. Out-of-range values
+// fall back to the numeric string.
+func ospfTypeName(t uint16) string {
+	if int(t) >= 1 && int(t) < len(ospfTypeNames) {
+		return ospfTypeNames[t]
+	}
+
+	return strconv.FormatUint(uint64(t), 10)
+}
+
+// arpOpNames indexes ARP/RARP opcodes 1..4 (RFC 826 / RFC 903).
+var arpOpNames = [...]string{"", "request", "reply", "rev-req", "rev-reply"}
+
+func arpOpName(op uint16) string {
+	if int(op) >= 1 && int(op) < len(arpOpNames) {
+		return arpOpNames[op]
+	}
+
+	return strconv.FormatUint(uint64(op), 10)
+}
+
+// greInnerNames maps known EtherTypes used as the GRE inner-protocol field.
+var greInnerNames = map[uint16]string{
+	0x0800: "IPv4",
+	0x86DD: "IPv6",
+	0x6558: "TransEth",
+	0x8847: "MPLS",
+	0x8848: "MPLS-MC",
+	0x0806: "ARP",
+}
+
+func greInnerName(t uint16) string {
+	if s, ok := greInnerNames[t]; ok {
+		return s
+	}
+
+	return "0x" + strconv.FormatUint(uint64(t), 16)
 }
 
 // bytesToAddr converts a 16-byte address to a netip.Addr.

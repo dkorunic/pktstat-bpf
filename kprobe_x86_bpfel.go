@@ -86,15 +86,20 @@ type kprobeSpecs struct {
 //
 // It can be passed ebpf.CollectionSpec.Assign.
 type kprobeProgramSpecs struct {
-	IcmpSend       *ebpf.ProgramSpec `ebpf:"__icmp_send"`
-	Icmp6Send      *ebpf.ProgramSpec `ebpf:"icmp6_send"`
-	IcmpRcv        *ebpf.ProgramSpec `ebpf:"icmp_rcv"`
-	Icmpv6Rcv      *ebpf.ProgramSpec `ebpf:"icmpv6_rcv"`
-	Ip6SendSkb     *ebpf.ProgramSpec `ebpf:"ip6_send_skb"`
-	IpSendSkb      *ebpf.ProgramSpec `ebpf:"ip_send_skb"`
-	SkbConsumeUdp  *ebpf.ProgramSpec `ebpf:"skb_consume_udp"`
-	TcpCleanupRbuf *ebpf.ProgramSpec `ebpf:"tcp_cleanup_rbuf"`
-	TcpSendmsg     *ebpf.ProgramSpec `ebpf:"tcp_sendmsg"`
+	IcmpSend         *ebpf.ProgramSpec `ebpf:"__icmp_send"`
+	Icmp6Send        *ebpf.ProgramSpec `ebpf:"icmp6_send"`
+	IcmpRcv          *ebpf.ProgramSpec `ebpf:"icmp_rcv"`
+	Icmpv6Rcv        *ebpf.ProgramSpec `ebpf:"icmpv6_rcv"`
+	Ip6LocalOut      *ebpf.ProgramSpec `ebpf:"ip6_local_out"`
+	Ip6SendSkb       *ebpf.ProgramSpec `ebpf:"ip6_send_skb"`
+	IpLocalOut       *ebpf.ProgramSpec `ebpf:"ip_local_out"`
+	IpRcv            *ebpf.ProgramSpec `ebpf:"ip_rcv"`
+	IpSendSkb        *ebpf.ProgramSpec `ebpf:"ip_send_skb"`
+	Ipv6Rcv          *ebpf.ProgramSpec `ebpf:"ipv6_rcv"`
+	SkbConsumeUdp    *ebpf.ProgramSpec `ebpf:"skb_consume_udp"`
+	TcpCleanupRbuf   *ebpf.ProgramSpec `ebpf:"tcp_cleanup_rbuf"`
+	TcpRetransmitSkb *ebpf.ProgramSpec `ebpf:"tcp_retransmit_skb"`
+	TcpSendmsg       *ebpf.ProgramSpec `ebpf:"tcp_sendmsg"`
 }
 
 // kprobeMapSpecs contains maps before they are loaded into the kernel.
@@ -108,6 +113,7 @@ type kprobeMapSpecs struct {
 //
 // It can be passed ebpf.CollectionSpec.Assign.
 type kprobeVariableSpecs struct {
+	ArpEnabled  *ebpf.VariableSpec `ebpf:"arp_enabled"`
 	CgrpfsMagic *ebpf.VariableSpec `ebpf:"cgrpfs_magic"`
 }
 
@@ -144,6 +150,7 @@ func (m *kprobeMaps) Close() error {
 //
 // It can be passed to loadKprobeObjects or ebpf.CollectionSpec.LoadAndAssign.
 type kprobeVariables struct {
+	ArpEnabled  *ebpf.Variable `ebpf:"arp_enabled"`
 	CgrpfsMagic *ebpf.Variable `ebpf:"cgrpfs_magic"`
 }
 
@@ -151,15 +158,20 @@ type kprobeVariables struct {
 //
 // It can be passed to loadKprobeObjects or ebpf.CollectionSpec.LoadAndAssign.
 type kprobePrograms struct {
-	IcmpSend       *ebpf.Program `ebpf:"__icmp_send"`
-	Icmp6Send      *ebpf.Program `ebpf:"icmp6_send"`
-	IcmpRcv        *ebpf.Program `ebpf:"icmp_rcv"`
-	Icmpv6Rcv      *ebpf.Program `ebpf:"icmpv6_rcv"`
-	Ip6SendSkb     *ebpf.Program `ebpf:"ip6_send_skb"`
-	IpSendSkb      *ebpf.Program `ebpf:"ip_send_skb"`
-	SkbConsumeUdp  *ebpf.Program `ebpf:"skb_consume_udp"`
-	TcpCleanupRbuf *ebpf.Program `ebpf:"tcp_cleanup_rbuf"`
-	TcpSendmsg     *ebpf.Program `ebpf:"tcp_sendmsg"`
+	IcmpSend         *ebpf.Program `ebpf:"__icmp_send"`
+	Icmp6Send        *ebpf.Program `ebpf:"icmp6_send"`
+	IcmpRcv          *ebpf.Program `ebpf:"icmp_rcv"`
+	Icmpv6Rcv        *ebpf.Program `ebpf:"icmpv6_rcv"`
+	Ip6LocalOut      *ebpf.Program `ebpf:"ip6_local_out"`
+	Ip6SendSkb       *ebpf.Program `ebpf:"ip6_send_skb"`
+	IpLocalOut       *ebpf.Program `ebpf:"ip_local_out"`
+	IpRcv            *ebpf.Program `ebpf:"ip_rcv"`
+	IpSendSkb        *ebpf.Program `ebpf:"ip_send_skb"`
+	Ipv6Rcv          *ebpf.Program `ebpf:"ipv6_rcv"`
+	SkbConsumeUdp    *ebpf.Program `ebpf:"skb_consume_udp"`
+	TcpCleanupRbuf   *ebpf.Program `ebpf:"tcp_cleanup_rbuf"`
+	TcpRetransmitSkb *ebpf.Program `ebpf:"tcp_retransmit_skb"`
+	TcpSendmsg       *ebpf.Program `ebpf:"tcp_sendmsg"`
 }
 
 func (p *kprobePrograms) Close() error {
@@ -168,10 +180,15 @@ func (p *kprobePrograms) Close() error {
 		p.Icmp6Send,
 		p.IcmpRcv,
 		p.Icmpv6Rcv,
+		p.Ip6LocalOut,
 		p.Ip6SendSkb,
+		p.IpLocalOut,
+		p.IpRcv,
 		p.IpSendSkb,
+		p.Ipv6Rcv,
 		p.SkbConsumeUdp,
 		p.TcpCleanupRbuf,
+		p.TcpRetransmitSkb,
 		p.TcpSendmsg,
 	)
 }

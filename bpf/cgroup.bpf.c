@@ -35,7 +35,7 @@ typedef struct cgroup_event_t {
   __u64 cgroupid;
 } cgroupevent;
 
-// Per-CPU scratch buffer for the PATH_MAX path string (too large for stack).
+// Per-CPU PATH_MAX scratch (too large for stack).
 struct {
   __uint(type, BPF_MAP_TYPE_PERCPU_ARRAY);
   __uint(max_entries, 1);

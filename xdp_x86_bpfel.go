@@ -100,6 +100,7 @@ type xdpMapSpecs struct {
 //
 // It can be passed ebpf.CollectionSpec.Assign.
 type xdpVariableSpecs struct {
+	ArpEnabled *ebpf.VariableSpec `ebpf:"arp_enabled"`
 }
 
 // xdpObjects contains all objects after they have been loaded into the kernel.
@@ -135,6 +136,7 @@ func (m *xdpMaps) Close() error {
 //
 // It can be passed to loadXdpObjects or ebpf.CollectionSpec.LoadAndAssign.
 type xdpVariables struct {
+	ArpEnabled *ebpf.Variable `ebpf:"arp_enabled"`
 }
 
 // xdpPrograms contains all programs after they have been loaded into the kernel.

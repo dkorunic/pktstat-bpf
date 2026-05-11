@@ -40,10 +40,11 @@ const (
 )
 
 var (
-	ifname, xdpMode, useCGroup                               *string
-	jsonOutput, version, help, useXDP, useKProbes, enableTUI *bool
-	timeout, refresh                                         *time.Duration
-	xdpAttachFlags                                           link.XDPAttachFlags
+	ifname, xdpMode, useCGroup                                      *string
+	jsonOutput, version, help, useXDP, useKProbes, enableTUI, noARP *bool
+	timeout, refresh                                                *time.Duration
+	maxEntries                                                      *uint
+	xdpAttachFlags                                                  link.XDPAttachFlags
 )
 
 func parseFlags() {
@@ -63,6 +64,9 @@ func parseFlags() {
 
 	refresh = fs.Duration('r', "refresh", defaultRefresh, "refresh interval in TUI")
 	timeout = fs.Duration('t', "timeout", defaultTimeout, "timeout for packet capture in CLI")
+
+	maxEntries = fs.UintLong("max-entries", 0, "override pkt_count map max_entries (0 = compile-time default)")
+	noARP = fs.BoolLong("no-arp", "disable ARP capture in TC/XDP modes (skips parse_arp dispatch)")
 
 	var err error
 

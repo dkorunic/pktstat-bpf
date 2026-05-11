@@ -100,6 +100,7 @@ type tcMapSpecs struct {
 //
 // It can be passed ebpf.CollectionSpec.Assign.
 type tcVariableSpecs struct {
+	ArpEnabled *ebpf.VariableSpec `ebpf:"arp_enabled"`
 }
 
 // tcObjects contains all objects after they have been loaded into the kernel.
@@ -135,6 +136,7 @@ func (m *tcMaps) Close() error {
 //
 // It can be passed to loadTcObjects or ebpf.CollectionSpec.LoadAndAssign.
 type tcVariables struct {
+	ArpEnabled *ebpf.Variable `ebpf:"arp_enabled"`
 }
 
 // tcPrograms contains all programs after they have been loaded into the kernel.

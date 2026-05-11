@@ -110,6 +110,7 @@ type cgroupSkbMapSpecs struct {
 //
 // It can be passed ebpf.CollectionSpec.Assign.
 type cgroupSkbVariableSpecs struct {
+	ArpEnabled  *ebpf.VariableSpec `ebpf:"arp_enabled"`
 	CgrpfsMagic *ebpf.VariableSpec `ebpf:"cgrpfs_magic"`
 }
 
@@ -148,6 +149,7 @@ func (m *cgroupSkbMaps) Close() error {
 //
 // It can be passed to loadCgroupSkbObjects or ebpf.CollectionSpec.LoadAndAssign.
 type cgroupSkbVariables struct {
+	ArpEnabled  *ebpf.Variable `ebpf:"arp_enabled"`
 	CgrpfsMagic *ebpf.Variable `ebpf:"cgrpfs_magic"`
 }
 

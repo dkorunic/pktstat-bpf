@@ -44,6 +44,21 @@ const (
 	Tbps         = 1000 * Gbps
 )
 
+// Protocol name constants used by the per-protocol switch arms in outputPlain,
+// MarshalJSON, and tui.go updateStatsTable. Match the values registered in
+// helpers.go protoNames.
+const (
+	protoTCP    = "TCP"
+	protoUDP    = "UDP"
+	protoICMPv4 = "ICMPv4"
+	protoICMPv6 = "IPv6-ICMP"
+	protoESP    = "IPSEC-ESP"
+	protoAH     = "IPSEC-AH"
+	protoGRE    = "GRE"
+	protoOSPF   = "OSPFIGP"
+	protoARP    = "ARP"
+)
+
 // processMap processes a given ebpf.Map object by iterating over all its entries,
 // converting the counter values into a statEntry slice, and sorting the slice
 // using the given sortFunc.
@@ -171,7 +186,7 @@ func outputPlain(m []statEntry) string {
 		sb.WriteString(v.Proto)
 
 		switch v.Proto {
-		case "ICMPv4", "IPv6-ICMP":
+		case protoICMPv4, protoICMPv6:
 			sb.WriteString(", src: ")
 			sb.WriteString(v.SrcIP.String())
 			sb.WriteString(", dst: ")
@@ -180,6 +195,43 @@ func outputPlain(m []statEntry) string {
 			sb.WriteString(strconv.FormatUint(uint64(v.SrcPort), 10))
 			sb.WriteString(", code: ")
 			sb.WriteString(strconv.FormatUint(uint64(v.DstPort), 10))
+		case protoESP, protoAH:
+			spi := uint32(v.SrcPort)<<16 | uint32(v.DstPort)
+			sb.WriteString(", src: ")
+			sb.WriteString(v.SrcIP.String())
+			sb.WriteString(", dst: ")
+			sb.WriteString(v.DstIP.String())
+			sb.WriteString(", spi: 0x")
+			sb.WriteString(strconv.FormatUint(uint64(spi), 16))
+		case protoGRE:
+			sb.WriteString(", src: ")
+			sb.WriteString(v.SrcIP.String())
+			sb.WriteString(", dst: ")
+			sb.WriteString(v.DstIP.String())
+			sb.WriteString(", inner: ")
+			sb.WriteString(greInnerName(v.SrcPort))
+			sb.WriteString(", flags: 0x")
+			flagsStr := strconv.FormatUint(uint64(v.DstPort), 16)
+			for i := len(flagsStr); i < 4; i++ {
+				sb.WriteByte('0')
+			}
+			sb.WriteString(flagsStr)
+		case protoOSPF:
+			sb.WriteString(", src: ")
+			sb.WriteString(v.SrcIP.String())
+			sb.WriteString(", dst: ")
+			sb.WriteString(v.DstIP.String())
+			sb.WriteString(", type: ")
+			sb.WriteString(ospfTypeName(v.SrcPort))
+			sb.WriteString(", v")
+			sb.WriteString(strconv.FormatUint(uint64(v.DstPort), 10))
+		case protoARP:
+			sb.WriteString(", src: ")
+			sb.WriteString(v.SrcIP.String())
+			sb.WriteString(", dst: ")
+			sb.WriteString(v.DstIP.String())
+			sb.WriteString(", op: ")
+			sb.WriteString(arpOpName(v.SrcPort))
 		default:
 			sb.WriteString(", src: ")
 			sb.WriteString(v.SrcIP.String())
@@ -240,6 +292,46 @@ func outputJSON(m []statEntry) {
 	if err := jsonEncoder.Encode(m); err != nil {
 		_, _ = fmt.Fprintf(os.Stderr, "Error encoding JSON output: %v\n", err)
 	}
+}
+
+// MarshalJSON augments the default struct-tag encoding with protocol-aware
+// fields for the protocols where src_port/dst_port carry packed metadata
+// (ESP/AH SPI, ARP opcode, OSPF type/version, GRE inner protocol/flags).
+//
+// Existing fields (srcPort, dstPort, proto, srcIp, dstIp, etc.) are always
+// emitted, so consumers that ignore the new fields keep their current shape.
+func (e *statEntry) MarshalJSON() ([]byte, error) {
+	type alias statEntry
+
+	type extended struct {
+		*alias
+
+		SPI      *uint32 `json:"spi,omitempty"`
+		GREFlags *uint16 `json:"greFlags,omitempty"`
+		ARPOp    string  `json:"arpOp,omitempty"`
+		OSPFType string  `json:"ospfType,omitempty"`
+		GREInner string  `json:"greInner,omitempty"`
+		OSPFVer  uint8   `json:"ospfVersion,omitempty"`
+	}
+
+	ext := extended{alias: (*alias)(e)}
+
+	switch e.Proto {
+	case protoESP, protoAH:
+		spi := uint32(e.SrcPort)<<16 | uint32(e.DstPort) //nolint:mnd
+		ext.SPI = &spi
+	case protoARP:
+		ext.ARPOp = arpOpName(e.SrcPort)
+	case protoOSPF:
+		ext.OSPFType = ospfTypeName(e.SrcPort)
+		ext.OSPFVer = uint8(e.DstPort) //nolint:gosec // OSPF version is 2 or 3
+	case protoGRE:
+		ext.GREInner = greInnerName(e.SrcPort)
+		flags := e.DstPort
+		ext.GREFlags = &flags
+	}
+
+	return json.Marshal(&ext)
 }
 
 // bsliceToString converts a slice of int8 values to a string by first
