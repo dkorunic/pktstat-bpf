@@ -153,6 +153,34 @@ func greInnerName(t uint16) string {
 	return "0x" + strconv.FormatUint(uint64(t), 16)
 }
 
+// L7 app-proto identifiers. Must match the APP_PROTO_* #defines in
+// bpf/counter.h. Stored as uint8 values in the flow_app_proto BPF map.
+const (
+	appProtoUnknown uint8 = 0
+	appProtoHTTP    uint8 = 1
+	appProtoTLS     uint8 = 2
+	appProtoQUIC    uint8 = 3
+)
+
+// appProtoNames maps the app-proto enum to display strings. Unknown
+// returns "" so callers can suppress the column / JSON field naturally.
+var appProtoNames = [...]string{
+	appProtoUnknown: "",
+	appProtoHTTP:    "HTTP",
+	appProtoTLS:     "TLS",
+	appProtoQUIC:    "QUIC",
+}
+
+// appProtoToString returns the display name for an L7 app-proto identifier.
+// Out-of-range values return "" so they are omitted from output uniformly.
+func appProtoToString(p uint8) string {
+	if int(p) >= len(appProtoNames) {
+		return ""
+	}
+
+	return appProtoNames[p]
+}
+
 // bytesToAddr decodes the BPF-side in6_addr-shaped storage into a netip.Addr,
 // unmapping the v4-in-v6 prefix (::ffff:a.b.c.d) back to a 4-byte IPv4 address.
 func bytesToAddr(addr [16]byte) netip.Addr {

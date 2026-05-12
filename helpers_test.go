@@ -78,3 +78,26 @@ func TestGREInnerName(t *testing.T) {
 		}
 	}
 }
+
+func TestAppProtoToString(t *testing.T) {
+	t.Parallel()
+
+	cases := []struct {
+		in   uint8
+		want string
+	}{
+		{appProtoUnknown, ""},
+		{appProtoHTTP, "HTTP"},
+		{appProtoTLS, "TLS"},
+		{appProtoQUIC, "QUIC"},
+		{99, ""},
+		{255, ""},
+	}
+
+	for _, c := range cases {
+		got := appProtoToString(c.in)
+		if got != c.want {
+			t.Errorf("appProtoToString(%d) = %q, want %q", c.in, got, c.want)
+		}
+	}
+}
