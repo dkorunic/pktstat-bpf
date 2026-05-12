@@ -365,6 +365,13 @@ process_ip4(struct iphdr *ip4, void *data_end, statkey *key) {
     }
     key->src_port = bpf_ntohs(tcp->source);
     key->dst_port = bpf_ntohs(tcp->dest);
+
+    // doff is the TCP data offset in 32-bit words; <5 is malformed.
+    __u8 doff = tcp->doff;
+    if (likely(doff >= 5)) {
+      detect_and_cache_l7(transport, data_end, IPPROTO_TCP,
+                          (__u32)doff * 4, key);
+    }
     break;
   }
   case IPPROTO_UDP: {
@@ -374,6 +381,8 @@ process_ip4(struct iphdr *ip4, void *data_end, statkey *key) {
     }
     key->src_port = bpf_ntohs(udp->source);
     key->dst_port = bpf_ntohs(udp->dest);
+    detect_and_cache_l7(transport, data_end, IPPROTO_UDP,
+                        (__u32)sizeof(*udp), key);
     break;
   }
   case IPPROTO_ICMP: {
@@ -440,6 +449,12 @@ process_ip6(struct ipv6hdr *ip6, void *data_end, statkey *key) {
     }
     key->src_port = bpf_ntohs(tcp->source);
     key->dst_port = bpf_ntohs(tcp->dest);
+
+    __u8 doff = tcp->doff;
+    if (likely(doff >= 5)) {
+      detect_and_cache_l7(transport, data_end, IPPROTO_TCP,
+                          (__u32)doff * 4, key);
+    }
     break;
   }
   case IPPROTO_UDP: {
@@ -449,6 +464,8 @@ process_ip6(struct ipv6hdr *ip6, void *data_end, statkey *key) {
     }
     key->src_port = bpf_ntohs(udp->source);
     key->dst_port = bpf_ntohs(udp->dest);
+    detect_and_cache_l7(transport, data_end, IPPROTO_UDP,
+                        (__u32)sizeof(*udp), key);
     break;
   }
   case IPPROTO_ICMPV6: {
