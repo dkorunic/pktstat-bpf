@@ -13,6 +13,28 @@ import (
 	"github.com/cilium/ebpf"
 )
 
+type cgroupSkbFlowkey struct {
+	_     structs.HostLayout
+	Srcip struct {
+		_    structs.HostLayout
+		In6U struct {
+			_       structs.HostLayout
+			U6Addr8 [16]uint8
+		}
+	}
+	Dstip struct {
+		_    structs.HostLayout
+		In6U struct {
+			_       structs.HostLayout
+			U6Addr8 [16]uint8
+		}
+	}
+	SrcPort uint16
+	DstPort uint16
+	Proto   uint8
+	Pad     [3]uint8
+}
+
 type cgroupSkbSockinfo struct {
 	_    structs.HostLayout
 	Comm [16]uint8
@@ -102,8 +124,9 @@ type cgroupSkbProgramSpecs struct {
 //
 // It can be passed ebpf.CollectionSpec.Assign.
 type cgroupSkbMapSpecs struct {
-	PktCount *ebpf.MapSpec `ebpf:"pkt_count"`
-	SockInfo *ebpf.MapSpec `ebpf:"sock_info"`
+	FlowAppProto *ebpf.MapSpec `ebpf:"flow_app_proto"`
+	PktCount     *ebpf.MapSpec `ebpf:"pkt_count"`
+	SockInfo     *ebpf.MapSpec `ebpf:"sock_info"`
 }
 
 // cgroupSkbVariableSpecs contains global variables before they are loaded into the kernel.
@@ -134,12 +157,14 @@ func (o *cgroupSkbObjects) Close() error {
 //
 // It can be passed to loadCgroupSkbObjects or ebpf.CollectionSpec.LoadAndAssign.
 type cgroupSkbMaps struct {
-	PktCount *ebpf.Map `ebpf:"pkt_count"`
-	SockInfo *ebpf.Map `ebpf:"sock_info"`
+	FlowAppProto *ebpf.Map `ebpf:"flow_app_proto"`
+	PktCount     *ebpf.Map `ebpf:"pkt_count"`
+	SockInfo     *ebpf.Map `ebpf:"sock_info"`
 }
 
 func (m *cgroupSkbMaps) Close() error {
 	return _CgroupSkbClose(
+		m.FlowAppProto,
 		m.PktCount,
 		m.SockInfo,
 	)

@@ -13,6 +13,28 @@ import (
 	"github.com/cilium/ebpf"
 )
 
+type tcFlowkey struct {
+	_     structs.HostLayout
+	Srcip struct {
+		_    structs.HostLayout
+		In6U struct {
+			_       structs.HostLayout
+			U6Addr8 [16]uint8
+		}
+	}
+	Dstip struct {
+		_    structs.HostLayout
+		In6U struct {
+			_       structs.HostLayout
+			U6Addr8 [16]uint8
+		}
+	}
+	SrcPort uint16
+	DstPort uint16
+	Proto   uint8
+	Pad     [3]uint8
+}
+
 type tcStatkey struct {
 	_     structs.HostLayout
 	Srcip struct {
@@ -93,7 +115,8 @@ type tcProgramSpecs struct {
 //
 // It can be passed ebpf.CollectionSpec.Assign.
 type tcMapSpecs struct {
-	PktCount *ebpf.MapSpec `ebpf:"pkt_count"`
+	FlowAppProto *ebpf.MapSpec `ebpf:"flow_app_proto"`
+	PktCount     *ebpf.MapSpec `ebpf:"pkt_count"`
 }
 
 // tcVariableSpecs contains global variables before they are loaded into the kernel.
@@ -123,11 +146,13 @@ func (o *tcObjects) Close() error {
 //
 // It can be passed to loadTcObjects or ebpf.CollectionSpec.LoadAndAssign.
 type tcMaps struct {
-	PktCount *ebpf.Map `ebpf:"pkt_count"`
+	FlowAppProto *ebpf.Map `ebpf:"flow_app_proto"`
+	PktCount     *ebpf.Map `ebpf:"pkt_count"`
 }
 
 func (m *tcMaps) Close() error {
 	return _TcClose(
+		m.FlowAppProto,
 		m.PktCount,
 	)
 }
