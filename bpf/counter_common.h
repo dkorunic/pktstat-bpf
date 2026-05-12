@@ -260,6 +260,41 @@ detect_and_cache_l7(void *transport, void *data_end,
   }
 }
 
+// detect_and_cache_l7_skb is the skb-form counterpart for KProbes. Reads the
+// L7 peek via bpf_probe_read_kernel (sk_buff payload is kernel memory).
+// `payload_off` is the byte offset from skb->head to the L7 payload start
+// (caller computes from transport_header + L4 hdr len).
+//
+// noinline: an inlined version of the body trips the same "R3 !read_ok"
+// verifier issue on kernel 6.12 that process_l4_skb works around. Keep
+// noinline unless re-tested across all supported kernels.
+static __attribute__((noinline)) void
+detect_and_cache_l7_skb(struct sk_buff *skb, __u32 payload_off,
+                        __u8 l4_proto, const statkey *key) {
+  flowkey fk = {};
+  fk.srcip = key->srcip;
+  fk.dstip = key->dstip;
+  fk.src_port = key->src_port;
+  fk.dst_port = key->dst_port;
+  fk.proto = key->proto;
+
+  if (bpf_map_lookup_elem(&flow_app_proto, &fk) != NULL) {
+    return;
+  }
+
+  unsigned char *head = (unsigned char *)BPF_CORE_READ(skb, head);
+
+  __u8 buf[L7_PEEK_LEN];
+  if (bpf_probe_read_kernel(buf, sizeof(buf), head + payload_off) != 0) {
+    return;
+  }
+
+  __u8 app = sniff_app_proto(buf, L7_PEEK_LEN, l4_proto);
+  if (app != APP_PROTO_UNKNOWN) {
+    bpf_map_update_elem(&flow_app_proto, &fk, &app, BPF_ANY);
+  }
+}
+
 // ARP IPv4-over-Ethernet only. SPA→srcip, TPA→dstip, src_port=opcode.
 // Inverse ARP (op 8/9), RARP (EtherType 0x8035), and InfiniBand ARP
 // (htype=32) are intentionally excluded — out of scope.
