@@ -101,6 +101,10 @@ int BPF_KPROBE(ip_send_skb, struct net *net, struct sk_buff *skb) {
 
   update_val(&key, msglen);
 
+  __u16 th_off = BPF_CORE_READ(skb, transport_header);
+  detect_and_cache_l7_skb(skb, (__u32)th_off + (__u32)sizeof(struct udphdr),
+                          IPPROTO_UDP, &key);
+
   return 0;
 }
 
@@ -128,6 +132,10 @@ int BPF_KPROBE(ip6_send_skb, struct sk_buff *skb) {
 
   update_val(&key, msglen);
 
+  __u16 th_off = BPF_CORE_READ(skb, transport_header);
+  detect_and_cache_l7_skb(skb, (__u32)th_off + (__u32)sizeof(struct udphdr),
+                          IPPROTO_UDP, &key);
+
   return 0;
 }
 
@@ -151,6 +159,10 @@ int BPF_KPROBE(skb_consume_udp, struct sock *sk, struct sk_buff *skb, int len) {
   key.cgroupid = get_current_cgroup_id();
 
   update_val(&key, len);
+
+  __u16 th_off = BPF_CORE_READ(skb, transport_header);
+  detect_and_cache_l7_skb(skb, (__u32)th_off + (__u32)sizeof(struct udphdr),
+                          IPPROTO_UDP, &key);
 
   return 0;
 }
