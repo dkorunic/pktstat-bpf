@@ -50,6 +50,29 @@ struct {
   __type(value, statvalue);
 } pkt_count SEC(".maps");
 
+// Process-agnostic 5-tuple key for the flow_app_proto cache. PID/cgroup are
+// intentionally absent — L7 protocol is a property of the flow, not the
+// process. Trailing pad is explicit so layout is stable across compilers.
+typedef struct flowkey_t {
+  struct in6_addr srcip;
+  struct in6_addr dstip;
+  __u16 src_port;
+  __u16 dst_port;
+  __u8  proto;
+  __u8  _pad[3];
+} flowkey;
+
+// flow_app_proto caches the detected L7 app-proto per 5-tuple. NOT per-CPU:
+// detection is rare-write/heavy-read and we want one canonical answer per
+// flow visible to every CPU. Sized via the same MAX_ENTRIES knob as
+// pkt_count (applyMaxEntries patches both at load time).
+struct {
+  __uint(type, BPF_MAP_TYPE_LRU_HASH);
+  __uint(max_entries, MAX_ENTRIES);
+  __type(key, flowkey);
+  __type(value, __u8);
+} flow_app_proto SEC(".maps");
+
 typedef struct sockinfo_t {
   __u8 comm[TASK_COMM_LEN];
   pid_t pid;
