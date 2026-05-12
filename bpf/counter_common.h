@@ -225,6 +225,41 @@ sniff_app_proto(const __u8 *buf, __u32 peek_len, __u8 l4_proto) {
   return APP_PROTO_UNKNOWN;
 }
 
+// detect_and_cache_l7 fills flow_app_proto for the flow described by `key`
+// using direct packet access. Called from process_ip4/process_ip6 in the
+// TCP/UDP cases. `transport` points to the L4 header; `l4_hdr_len` is its
+// computed byte length (TCP doff*4, UDP 8). Bounds-checks against data_end.
+//
+// Skips the sniff when the flow is already cached, so the per-packet cost
+// after the first detected packet is one map lookup.
+static inline __attribute__((always_inline)) void
+detect_and_cache_l7(void *transport, void *data_end,
+                    __u8 l4_proto, __u32 l4_hdr_len, const statkey *key) {
+  flowkey fk = {};
+  fk.srcip = key->srcip;
+  fk.dstip = key->dstip;
+  fk.src_port = key->src_port;
+  fk.dst_port = key->dst_port;
+  fk.proto = key->proto;
+
+  if (bpf_map_lookup_elem(&flow_app_proto, &fk) != NULL) {
+    return;
+  }
+
+  void *payload = transport + l4_hdr_len;
+  if (unlikely(payload + L7_PEEK_LEN > data_end)) {
+    return;
+  }
+
+  __u8 buf[L7_PEEK_LEN];
+  __builtin_memcpy(buf, payload, L7_PEEK_LEN);
+
+  __u8 app = sniff_app_proto(buf, L7_PEEK_LEN, l4_proto);
+  if (app != APP_PROTO_UNKNOWN) {
+    bpf_map_update_elem(&flow_app_proto, &fk, &app, BPF_ANY);
+  }
+}
+
 // ARP IPv4-over-Ethernet only. SPA→srcip, TPA→dstip, src_port=opcode.
 // Inverse ARP (op 8/9), RARP (EtherType 0x8035), and InfiniBand ARP
 // (htype=32) are intentionally excluded — out of scope.
