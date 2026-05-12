@@ -32,6 +32,8 @@ The author has given several eBPF talks, available below along with the accompan
 
 [![DEEP 2024: eBPF: Features, capabilities and implementation](https://img.youtube.com/vi/9mQ03Cpfq_g/0.jpg)](https://youtu.be/9mQ03Cpfq_g)
 
+- Talk about real-world caveats of using eBPF in production systems, [slides only](https://dkorunic.net/pdf/Korunic_eBPF2.pdf).
+
 ## Requirements
 
 The minimum requirement for the eBPF program is Linux kernel **4.10** with BTF enabled; on such older kernels, KProbes will likely be the only supported mode (e.g. RHEL/CentOS 8, Debian 10). From kernel **5.9** onwards (RHEL/CentOS 9, Debian 11, Ubuntu 20.04), XDP mode is supported. TC may work as early as **5.14** (RHEL/CentOS 9) if the distribution has backported TC eBPF patches. On all recent distributions (RHEL/CentOS 9, Debian 12, Ubuntu 24.04), all eBPF modes are fully supported.
