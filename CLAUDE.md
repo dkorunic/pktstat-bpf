@@ -7,40 +7,65 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 This project uses [go-task](https://taskfile.dev) (`Taskfile.yml`) as the build orchestrator.
 
 ```sh
-task build          # fmt + compile (CGO_ENABLED=0, PGO, stripped)
+task build          # fmt + compile (CGO_ENABLED=0, PGO, stripped, version vars injected)
 task build-debug    # fmt + compile with race detector (CGO_ENABLED=1)
-task lint           # fmt + golangci-lint
+task lint           # fmt + golangci-lint v2 (timeout 5m)
+task lint-nil       # fmt + nilaway
 task fmt            # gci + gofumpt + betteralign (Go sources)
-task fmt-bpf        # clang-format on bpf/*.c / bpf/*.h
+task fmt-bpf        # clang-format on bpf/*.c / bpf/*.h (requires clang-format v15+)
 task generate       # go generate (recompile eBPF C → Go; requires clang)
+task modernize      # gopls modernize -fix -test ./...
 task update         # go get -u && go mod tidy
+task release        # goreleaser release --clean -p 4
 ```
 
-Plain `go build` also works for the Go userland (pre-compiled eBPF objects are committed).
+Plain `go build` also works for the Go userland (pre-compiled eBPF objects are committed). The default `task` runs `update` then `build`.
+
+## Testing
+
+```sh
+go test ./...       # run all Go unit tests (no dedicated task target)
+go test -run TestOSPFTypeName ./...   # run a single test
+```
+
+Tests currently live in `helpers_test.go` and `output_test.go` and cover protocol decoders (`ospfTypeName`, `arpOpName`, `greInnerName`) and `outputPlain` / `MarshalJSON` formatting for protocols that pack metadata into the port fields (ESP/AH SPI, ARP opcode, OSPF type/version, GRE inner protocol/flags). The eBPF C code itself has no Go-side tests — it is validated only by the kernel verifier at load time.
+
+`output_test.go` has an `init()` that pre-points `useKProbes` and `useCGroup` to false/empty so `outputPlain` doesn't deref nil flag pointers.
 
 ## Architecture Overview
 
-pktstat-bpf is a Linux eBPF packet statistics tool. It has two layers:
+pktstat-bpf is a Linux eBPF packet statistics tool with two layers:
 
 **eBPF layer (C, in `bpf/`):**
-- `bpf/tc.bpf.c` — packet/byte counting via TC (TCX ingress+egress).
-- `bpf/xdp.bpf.c` — packet/byte counting via XDP (ingress only).
-- `bpf/kprobe.bpf.c` — per-process TCP/UDP/ICMP stats via KProbes with PID/CGroup tracking.
-- `bpf/cgroup_skb.bpf.c` — packet/byte counting via CGroup SKB hooks.
-- `bpf/cgroup.bpf.c` — raw tracepoint on `cgroup_mkdir` to push new CGroup path events to userspace via perf buffer; shared by both KProbes and CGroup modes.
+- `bpf/counter_common.h` — shared types and helpers used by all counter programs: `statkey` / `statvalue` structs, the `pkt_count` map (`BPF_MAP_TYPE_LRU_PERCPU_HASH`), IPv4-mapped-IPv6 encoding, ARP/ESP/AH/GRE/OSPF parsers, and runtime-patchable globals (`cgrpfs_magic`, `arp_enabled`).
+- `bpf/tc.bpf.c` — TC (TCX ingress+egress) counter program.
+- `bpf/xdp.bpf.c` — XDP (ingress only) counter program.
+- `bpf/kprobe.bpf.c` — per-process TCP/UDP/ICMP/IP-layer KProbes with PID + CGroup tracking; uses the skb-form parser `process_l4_skb` from `counter_common.h`.
+- `bpf/cgroup_skb.bpf.c` — CGroup SKB ingress/egress + `inet_sock_create` / `inet_sock_release` for PID attribution.
+- `bpf/cgroup.bpf.c` — raw tracepoint on `cgroup_mkdir` that pushes new cgroup path events to userspace via a perf buffer; shared by KProbes and CGroup modes.
 
 **Userland layer (Go, root package `main`):**
-- `gen.go` — `//go:generate` directives that invoke `bpf2go` to compile each `.bpf.c` for `amd64` and `arm64`, producing `tc_`, `xdp_`, `kprobe_`, `cgroupskb_`, and `cgroup_` prefixed `*_{x86,arm64}_bpfel.{go,o}` files (bpf2go maps `-target amd64` → `x86` in filenames).
-- `main.go` — program entry: loads both eBPF objects, resolves interface, selects capture mode (TC / XDP / KProbes / CGroup), runs TUI or CLI loop.
-- `probe.go` — `startTC`, `startXDP`, `startKProbes`, `startCgroup`, `startCGroupTrace`: attach eBPF programs to hooks.
-- `map.go` — reads `PktCount` eBPF LRU hash map; prefers `BatchLookup` (kernel ≥5.6), falls back to iterator.
-- `cgroup.go` — builds and maintains a `cgroup-id → path` cache by walking `/sys/fs/cgroup` and consuming perf events from `cgroup.bpf.c`.
-- `output.go` — `processMap`, sort functions (`bitrateSort`, etc.), `outputPlain`/`outputJSON`, bitrate formatting.
-- `tui.go` — rivo/tview TUI, refreshed on `--refresh` interval.
-- `flags.go` — flag parsing via `peterbourgon/ff/v4`; sets package-level pointers used throughout.
-- `types.go` — `statEntry` (per-flow stats struct) and `kprobeHook`.
-- `helpers.go` — `bytesToAddr`, `protoToString`, `findFirstEtherIface`.
-- `init.go` — version variables (`GitTag`, `GitCommit`, …) injected at link time.
+- `gen.go` — `//go:generate` directives invoke `bpf2go` for each `.bpf.c` × {amd64, arm64}, producing `tc_`, `xdp_`, `kprobe_`, `cgroupSkb`, and `cgroup` prefixed `*_{x86,arm64}_bpfel.{go,o}` files. Note: `bpf2go -target amd64` writes files with the `_x86_` suffix.
+- `main.go` — entry point; selects capture mode, loads only the eBPF object(s) needed for that mode (not all at once), wires up links, and runs either TUI or CLI loop.
+- `probe.go` — `startTC`, `startXDP`, `startKProbes`, `startCgroup`, `startCGroupTrace`: attach eBPF programs and gate on `features.HaveProgramType`.
+- `map.go` — reads `pkt_count`; prefers `BatchLookup` (kernel ≥5.6), falls back to iterator. Sums per-CPU slots into a single `statvalue` via `sumPerCPUValue`.
+- `cgroup.go` — `cgroup-id → path` cache populated by walking `/sys/fs/cgroup` and consuming `cgroup_mkdir` perf events.
+- `output.go` — `processMap`, sort functions, `outputPlain`/`outputJSON`, bitrate formatting, and the `MarshalJSON` override that decodes protocol-packed port fields into named JSON keys.
+- `tui.go` — rivo/tview TUI refreshed on `--refresh` interval.
+- `flags.go` — flag parsing via `peterbourgon/ff/v4`; exposes package-level pointers (`useXDP`, `useKProbes`, `useCGroup`, `maxEntries`, `noARP`, …).
+- `types.go` — `statEntry` (per-flow stats) and `kprobeHook`.
+- `helpers.go` — `bytesToAddr`, `protoToString` (with the `protoNames` table), `findFirstEtherIface`, and the protocol-decoder helpers `ospfTypeName` / `arpOpName` / `greInnerName`.
+- `init.go` — version variables (`GitTag`, `GitCommit`, `GitDirty`, `BuildTime`) injected at link time.
+
+### Cross-cutting patterns
+
+- **Canonical map types**. `map.go` reads `pkt_count` using `tcStatkey` / `tcStatvalue` even in XDP / KProbes / CGroup modes. All five generated object packages declare structurally identical Go structs because they all include `bpf/counter_common.h`, so a single iteration path serves every mode. Keep these structs in sync if you ever split the C header.
+- **Per-CPU read collapse**. `pkt_count` is `BPF_MAP_TYPE_LRU_PERCPU_HASH`: every lookup returns `possibleCPUs` slots. `sumPerCPUValue` in `map.go` aggregates them — don't read raw slots into a scalar without summing.
+- **Load-time BPF variable patching**. Before `LoadAndAssign`, `main.go` rewrites BPF `volatile const` globals via `spec.Variables[...]`:
+  - `applyCgrpfsMagic` — selects cgroup-v1 vs v2 code path; verifier folds the unused branch.
+  - `applyMaxEntries` — overrides the `pkt_count` map size from `--max-entries`.
+  - `applyArpEnabled` — disables ARP capture in TC/XDP when `--no-arp` is set.
+- **Mode precedence**. When multiple capture-mode flags are passed, `main.go`'s switch picks the first match in order `--cgroup > --kprobes > --xdp > TC (default)` and logs a warning; it does not error.
 
 ## Capture Modes
 
@@ -53,10 +78,19 @@ Four mutually-exclusive modes selected at runtime:
 | `--kprobes` | KProbes + PID/CGroup tracking | ≥4.10 + BTF |
 | `--cgroup <path>` | CGroup SKB + PID tracking | ≥4.10 + BTF |
 
+Notable runtime knobs: `--xdp_mode {auto,generic,native,offload}`, `--max-entries N` (overrides BPF map size), `--no-arp` (skips ARP dispatch in TC/XDP), `--tui` / `-g` (interactive), `--json`, `--timeout`, `--refresh`.
+
 ## Code Style & Tooling
 
 - **Formatter chain**: `gci` (import grouping) → `gofumpt` (strict gofmt) → `betteralign` (struct field alignment). Run `task fmt` before committing.
-- **Linter**: `golangci-lint` v2 with `default: all` minus a handful of disabled linters listed in `.golangci.yml`. Run `task lint`.
-- **No CGO** in production builds (`CGO_ENABLED=0`). CGO is only re-enabled for the race-detector build.
-- **eBPF code generation**: only needed when changing `bpf/*.c` or `bpf/*.h`. Requires `clang` and the arch-specific BTF headers under `contrib/`. Run `task generate` then commit the updated `*_bpfel.{go,o}` files.
-- The `contrib/` directory contains vendored kernel BTF/vmlinux headers split by architecture (`amd64/`, `arm64/`).
+- **Linter**: `golangci-lint` v2 with `default: all` minus the linters listed in `.golangci.yml` (cyclop, depguard, dupl, exhaustruct, forbidigo, funlen, gochecknoglobals, gocognit, lll, varnamelen, wrapcheck). Run `task lint`.
+- **No CGO** in production builds (`CGO_ENABLED=0`, set in `Taskfile.yml`). CGO is only re-enabled for `task build-debug` (race detector).
+- **eBPF code generation**: only needed when changing `bpf/*.c` or `bpf/*.h`. Requires `clang` and the arch-specific BTF headers under `contrib/{amd64,arm64}/vmlinux.h` (gitignored locally — fetch or symlink before running `task generate`). After regeneration, commit both `*_bpfel.go` and `*_bpfel.o` for both architectures.
+- **Modernize**: `task modernize` runs the gopls modernize analyzer with `-fix -test`.
+
+## eBPF Gotchas
+
+- `process_l4_skb` (the skb-form L4 parser in `counter_common.h`) must be `__attribute__((noinline))`. On kernel 6.12 the inlined form trips `R3 !read_ok` verifier errors when called from multi-arg kprobes like `ip_local_out`.
+- `pkt_count` is per-CPU and LRU; iteration via `BPF_MAP_TYPE_LRU_PERCPU_HASH` can return `ebpf.ErrIterationAborted` under churn. `main.go` treats that as a soft error and prints "output may be incomplete".
+- XDP detaches may reset the NIC on exit on some drivers — README recommends running under `screen`/`tmux`. Don't expect a clean interface state if you Ctrl-C during high traffic.
+- `bpf2go -target amd64` writes `*_x86_bpfel.{go,o}`, not `*_amd64_bpfel.*`. The `gen.go` directives and `gen.go`-produced filenames are the source of truth.

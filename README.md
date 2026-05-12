@@ -11,9 +11,9 @@ pktstat-bpf is a lightweight replacement for the ncurses/libpcap-based [pktstat]
 
 At the end of execution, the program displays per-IP and per-protocol statistics sorted by per-connection bitrate, packet count, and (source IP:port, destination IP:port) tuples.
 
-The program consists of [eBPF code written in C](bpf/counter.bpf.c) and a pure-Go userland component that parses and displays final IP/port/protocol/bitrate statistics. The Go component uses the [cilium/ebpf](https://github.com/cilium/ebpf) library to load and run the eBPF program and to interact with the eBPF map.
+The program consists of [eBPF code written in C](bpf/) and a pure-Go userland component that parses and displays final IP/port/protocol/bitrate statistics. The Go component uses the [cilium/ebpf](https://github.com/cilium/ebpf) library to load and run the eBPF program and to interact with the eBPF map.
 
-By default, the eBPF component uses **TC** (Traffic Control) eBPF hooks with TCX attaching, requiring at minimum Linux kernel **v6.6**, and collects both ingress and egress traffic statistics for TCP, UDP, ICMPv4, and ICMPv6. It can also switch to the faster [XDP](https://github.com/xdp-project/xdp-tutorial) (eXpress Data Path) hook at the cost of **losing egress statistics**, since XDP operates only in the ingress path. XDP mode requires at minimum Linux kernel **v5.9** due to its program-to-interface attachment API. Some distributions (notably Red Hat Enterprise Linux) have backported XDP/TC patches, so the eBPF program may work on older kernels as well (see Requirements for details).
+By default, the eBPF component uses **TC** (Traffic Control) eBPF hooks with TCX attaching, requiring at minimum Linux kernel **v6.6**, and collects both ingress and egress traffic statistics for TCP, UDP, ICMPv4, ICMPv6, ARP, IPSEC (ESP and AH), GRE, and OSPF. It can also switch to the faster [XDP](https://github.com/xdp-project/xdp-tutorial) (eXpress Data Path) hook at the cost of **losing egress statistics**, since XDP operates only in the ingress path. XDP mode requires at minimum Linux kernel **v5.9** due to its program-to-interface attachment API. Some distributions (notably Red Hat Enterprise Linux) have backported XDP/TC patches, so the eBPF program may work on older kernels as well (see Requirements for details).
 
 Alternatively, the tool can use **KProbes** to monitor TCP, UDP, ICMPv4, and ICMPv6 traffic across all containers, Kubernetes pods, NAT translations, and forwarded flows. In this mode, it also displays the process ID, process name, and cgroup path for traffic sent or delivered to a userspace application. KProbes operate closest to userspace and therefore have the highest overhead, but they provide uniquely useful process-level visibility. The hard dependency for KProbes is a [BTF-enabled](https://docs.ebpf.io/concepts/btf/) kernel. The program resolves kernel-level cgroup IDs to cgroup paths (under `/sys/fs/cgroup`) by scanning the cgroup filesystem and consuming kernel cgroup mkdir events via [dedicated eBPF code](bpf/cgroup.bpf.c).
 
@@ -82,6 +82,8 @@ FLAGS
       --xdp_mode STRING    XDP attach mode (auto, generic, native or offload; native and offload require NIC driver support) (default: auto)
   -r, --refresh DURATION   refresh interval in TUI (default: 1s)
   -t, --timeout DURATION   timeout for packet capture in CLI (default: 10m0s)
+      --max-entries UINT   override pkt_count map max_entries (0 = compile-time default) (default: 0)
+      --no-arp             disable ARP capture in TC/XDP modes (skips parse_arp dispatch)
 ```
 
 Use `--iface` to specify the network interface to capture on.
@@ -111,6 +113,10 @@ Use `--iface` to specify the network interface to capture on.
 `--kprobes` switches to KProbe mode to track TCP and UDP traffic per process. Performance is lower compared to TC and XDP modes, but all per-process traffic is visible across all cgroups, containers, and Kubernetes pods. Additional details such as process command name, process ID, and control group are displayed.
 
 `--cgroup <path>` measures ingress and egress traffic for the specified control group. Process command name and process ID are displayed when available.
+
+`--max-entries <n>` overrides the compile-time default size of the per-CPU LRU hash map (`pkt_count`) that backs all capture modes. A value of `0` keeps the default. Increase it on very busy systems where flow cardinality exceeds the default and you observe truncated output.
+
+`--no-arp` disables ARP capture in TC and XDP modes. ARP is enabled by default; pass this flag to skip the `parse_arp` dispatch entirely (e.g. on hosts where ARP traffic is noise). The flag is a no-op in KProbes and cgroup modes, which do not see ARP.
 
 ## Star History
 
