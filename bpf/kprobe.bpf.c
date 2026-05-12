@@ -310,6 +310,7 @@ int BPF_KPROBE(ip_local_out, struct net *net, struct sock *sk,
 
   size_t msglen = process_l4_skb(skb, &key, pid);
   if (unlikely(msglen == 0)) {
+    sniff_tcp_udp_skb(skb);
     return 0;
   }
 
@@ -338,6 +339,7 @@ int BPF_KPROBE(ip6_local_out, struct net *net, struct sock *sk,
 
   size_t msglen = process_l4_skb(skb, &key, pid);
   if (unlikely(msglen == 0)) {
+    sniff_tcp_udp_skb(skb);
     return 0;
   }
 
@@ -367,6 +369,7 @@ int BPF_KPROBE(ip_rcv, struct sk_buff *skb, struct net_device *dev,
 
   size_t msglen = process_l4_skb(skb, &key, pid);
   if (unlikely(msglen == 0)) {
+    sniff_tcp_udp_skb(skb);
     return 0;
   }
 
@@ -395,6 +398,7 @@ int BPF_KPROBE(ipv6_rcv, struct sk_buff *skb, struct net_device *dev,
 
   size_t msglen = process_l4_skb(skb, &key, pid);
   if (unlikely(msglen == 0)) {
+    sniff_tcp_udp_skb(skb);
     return 0;
   }
 

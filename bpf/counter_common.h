@@ -295,6 +295,87 @@ detect_and_cache_l7_skb(struct sk_buff *skb, __u32 payload_off,
   }
 }
 
+// extract_l4_flowkey_skb fills `key` (srcip, dstip, src_port, dst_port,
+// proto) from an skb that has an IPv4 or IPv6 + TCP/UDP header chain.
+// Returns the byte offset from skb->head at which the L7 payload begins,
+// or 0 if the skb isn't TCP/UDP / isn't well-formed for our purposes.
+// Used by the kprobe-side TCP/UDP L7 detection in ip_local_out/ip_rcv.
+static __attribute__((noinline)) __u32
+extract_l4_flowkey_skb(struct sk_buff *skb, statkey *key) {
+  unsigned char *head = (unsigned char *)BPF_CORE_READ(skb, head);
+  __u16 nh_off = BPF_CORE_READ(skb, network_header);
+  __u16 th_off = BPF_CORE_READ(skb, transport_header);
+  __u16 proto_be = BPF_CORE_READ(skb, protocol);
+
+  __u8 ip_proto;
+  __u32 l4_hdr_len;
+
+  switch (bpf_ntohs(proto_be)) {
+  case ETH_P_IP: {
+    struct iphdr *iphdr = (struct iphdr *)(head + nh_off);
+    ip_proto = BPF_CORE_READ(iphdr, protocol);
+    if (ip_proto != IPPROTO_TCP && ip_proto != IPPROTO_UDP) {
+      return 0;
+    }
+    __be32 sa = BPF_CORE_READ(iphdr, saddr);
+    __be32 da = BPF_CORE_READ(iphdr, daddr);
+    MAP_V4_IN_V6(key->srcip, sa);
+    MAP_V4_IN_V6(key->dstip, da);
+    break;
+  }
+  case ETH_P_IPV6: {
+    struct ipv6hdr *iphdr = (struct ipv6hdr *)(head + nh_off);
+    ip_proto = BPF_CORE_READ(iphdr, nexthdr);
+    if (ip_proto != IPPROTO_TCP && ip_proto != IPPROTO_UDP) {
+      return 0;
+    }
+    BPF_CORE_READ_INTO(&key->srcip, iphdr, saddr);
+    BPF_CORE_READ_INTO(&key->dstip, iphdr, daddr);
+    break;
+  }
+  default:
+    return 0;
+  }
+
+  if (ip_proto == IPPROTO_TCP) {
+    struct tcphdr *tcp = (struct tcphdr *)(head + th_off);
+    key->src_port = bpf_ntohs(BPF_CORE_READ(tcp, source));
+    key->dst_port = bpf_ntohs(BPF_CORE_READ(tcp, dest));
+    __u8 doff = BPF_CORE_READ_BITFIELD_PROBED(tcp, doff);
+    if (unlikely(doff < 5)) {
+      return 0;
+    }
+    l4_hdr_len = (__u32)doff * 4;
+  } else {
+    struct udphdr *udp = (struct udphdr *)(head + th_off);
+    key->src_port = bpf_ntohs(BPF_CORE_READ(udp, source));
+    key->dst_port = bpf_ntohs(BPF_CORE_READ(udp, dest));
+    l4_hdr_len = (__u32)sizeof(*udp);
+  }
+
+  key->proto = ip_proto;
+  return (__u32)th_off + l4_hdr_len;
+}
+
+// sniff_tcp_udp_skb performs the full L7 detect-and-cache cycle for a TCP
+// or UDP packet observed at one of the IP-layer kprobes (ip_local_out/
+// ip_rcv/ip6_local_out/ipv6_rcv). It does NOT touch pkt_count — counters
+// remain the responsibility of tcp_sendmsg/tcp_cleanup_rbuf for TCP and
+// the existing UDP hooks for UDP. Safe to call unconditionally; returns
+// immediately if the skb isn't TCP/UDP.
+static inline __attribute__((always_inline)) void
+sniff_tcp_udp_skb(struct sk_buff *skb) {
+  statkey key;
+  __builtin_memset(&key, 0, sizeof(key));
+
+  __u32 payload_off = extract_l4_flowkey_skb(skb, &key);
+  if (payload_off == 0) {
+    return;
+  }
+
+  detect_and_cache_l7_skb(skb, payload_off, key.proto, &key);
+}
+
 // ARP IPv4-over-Ethernet only. SPA→srcip, TPA→dstip, src_port=opcode.
 // Inverse ARP (op 8/9), RARP (EtherType 0x8035), and InfiniBand ARP
 // (htype=32) are intentionally excluded — out of scope.
