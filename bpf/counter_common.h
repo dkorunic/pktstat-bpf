@@ -156,6 +156,75 @@ parse_ospf(void *transport, void *data_end, statkey *key) {
   return OK;
 }
 
+// sniff_app_proto identifies HTTP, TLS, or QUIC from a pre-read L7 payload
+// prefix. Pure logic over a fixed-size buffer — no memory access, no map
+// calls. The caller is responsible for filling `buf` from packet payload
+// (direct access in TC/XDP/CGroup-SKB) or kernel skb (bpf_probe_read_kernel
+// in KProbes). Keep byte-identical with sniffAppProtoGo in sniff_test.go.
+static inline __attribute__((always_inline)) __u8
+sniff_app_proto(const __u8 *buf, __u32 peek_len, __u8 l4_proto) {
+  if (unlikely(peek_len < 5)) {
+    return APP_PROTO_UNKNOWN;
+  }
+
+  __u32 w = ((__u32)buf[0] << 24) | ((__u32)buf[1] << 16) |
+            ((__u32)buf[2] << 8) | (__u32)buf[3];
+  __u8 b4 = buf[4];
+
+  if (l4_proto == IPPROTO_TCP) {
+    switch (w) {
+    case 0x47455420: // "GET "
+    case 0x50555420: // "PUT "
+    case 0x50524920: // "PRI "
+      return APP_PROTO_HTTP;
+    case 0x504F5354: // "POST"
+      if (b4 == ' ') return APP_PROTO_HTTP;
+      break;
+    case 0x48454144: // "HEAD"
+      if (b4 == ' ') return APP_PROTO_HTTP;
+      break;
+    case 0x4F505449: // "OPTI"
+      if (b4 == 'O') return APP_PROTO_HTTP;
+      break;
+    case 0x44454C45: // "DELE"
+      if (b4 == 'T') return APP_PROTO_HTTP;
+      break;
+    case 0x50415443: // "PATC"
+      if (b4 == 'H') return APP_PROTO_HTTP;
+      break;
+    case 0x434F4E4E: // "CONN"
+      if (b4 == 'E') return APP_PROTO_HTTP;
+      break;
+    case 0x54524143: // "TRAC"
+      if (b4 == 'E') return APP_PROTO_HTTP;
+      break;
+    case 0x48545450: // "HTTP"
+      if (b4 == '/') return APP_PROTO_HTTP;
+      break;
+    }
+
+    // TLS record: type ∈ {0x14..0x17}, major=0x03, minor ∈ {0x00..0x04}.
+    if ((buf[0] == 0x14 || buf[0] == 0x15 || buf[0] == 0x16 ||
+         buf[0] == 0x17) &&
+        buf[1] == 0x03 && buf[2] <= 0x04) {
+      return APP_PROTO_TLS;
+    }
+  }
+
+  if (l4_proto == IPPROTO_UDP) {
+    // QUIC long header form (bit 7) + RFC 9000 fixed bit (bit 6).
+    if ((buf[0] & 0xC0) == 0xC0) {
+      __u32 v = ((__u32)buf[1] << 24) | ((__u32)buf[2] << 16) |
+                ((__u32)buf[3] << 8) | (__u32)buf[4];
+      if (v == 0x00000001 || v == 0x6B3343CF || v == 0x00000000) {
+        return APP_PROTO_QUIC;
+      }
+    }
+  }
+
+  return APP_PROTO_UNKNOWN;
+}
+
 // ARP IPv4-over-Ethernet only. SPA→srcip, TPA→dstip, src_port=opcode.
 // Inverse ARP (op 8/9), RARP (EtherType 0x8035), and InfiniBand ARP
 // (htype=32) are intentionally excluded — out of scope.
