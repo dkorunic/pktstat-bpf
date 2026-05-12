@@ -20,6 +20,99 @@ Alternatively, the tool can use **KProbes** to monitor TCP, UDP, ICMPv4, and ICM
 It is also possible to monitor a specific **cgroup** directly, with full support for both ingress and egress traffic. You can monitor all traffic by attaching to the root cgroup (e.g. `/sys/fs/cgroup`). Process tracking is available in cgroup mode, but only for traffic whose socket creation was observed by pktstat-bpf.
 ![Demo](demo.gif)
 
+## Architecture
+
+The diagram below sketches the two layers of pktstat-bpf. The Go userland (built on [cilium/ebpf](https://github.com/cilium/ebpf)) selects one of four mutually-exclusive capture modes, patches load-time constants on the corresponding BPF spec (`cgrpfs_magic`, `arp_enabled`, `max_entries`), attaches the program(s) to the right kernel surface, and then reads packet-counter data back through a single per-CPU LRU hash map. Every `bpf/*.c` program `#include`s `bpf/counter_common.h`, which is where `statkey` / `statvalue`, the `pkt_count` map, and the protocol parsers live — that shared header is what lets `map.go` consume every mode through a single type.
+
+```mermaid
+flowchart TB
+
+  subgraph user["Userland (Go, package main)"]
+    direction LR
+    mainEntry["<b>main.go</b><br/>mode select &amp; load<br/>cgroup &gt; kprobes &gt; xdp &gt; tc<br/>applies load-time patches:<br/>cgrpfs_magic / arp_enabled / max_entries"]
+    probe["<b>probe.go</b><br/>startTC / startXDP / startKProbes<br/>startCgroup / startCGroupTrace"]
+    mapr["<b>map.go</b><br/>BatchLookup + iterator fallback<br/>sumPerCPUValue · commIntern"]
+    cgrouply["<b>cgroup.go</b><br/>cgroup-id &#8594; path cache<br/>perf reader + /sys/fs/cgroup walk"]
+    output["<b>output.go</b><br/>processMap, sorters<br/>JSON / Plain<br/>decodes ARP/ESP/AH/GRE/OSPF"]
+    tui["<b>tui.go</b><br/>rivo/tview interactive<br/>--refresh, sort keys 0..4"]
+  end
+
+  subgraph maps["BPF maps &#8212; kernel &#8596; userland surface"]
+    direction LR
+    pktcnt[("<b>pkt_count</b><br/>LRU_PERCPU_HASH<br/>statkey &#8594; statvalue<br/>per-CPU; summed on read")]
+    sockinfo[("<b>sock_info</b><br/>cookie &#8594; {pid, comm}<br/>cgroup_skb mode only")]
+    perf[("<b>cgroup_events</b><br/>PERF_EVENT_ARRAY<br/>cgroup_mkdir events")]
+  end
+
+  subgraph ebpf["eBPF programs (bpf/*.c, embedded via bpf2go)"]
+    direction TB
+    common["<b>counter_common.h</b> &#8212; shared parser core<br/>statkey / statvalue · pkt_count map<br/>process_eth &#8594; process_ip4 / process_ip6<br/>parse_arp / parse_esp / parse_ah / parse_gre / parse_ospf<br/>process_l4_skb (__noinline)<br/>VLAN/QinQ unwrap; IPv6 ext-header walk<br/>load-time consts: cgrpfs_magic, arp_enabled"]
+    tc["<b>tc.bpf.c</b><br/>TCX ingress + egress<br/>kernel &#8805; 6.6"]
+    xdp["<b>xdp.bpf.c</b><br/>ingress only<br/>kernel &#8805; 5.9"]
+    kprobe["<b>kprobe.bpf.c</b><br/>14 kprobes<br/>(TCP / UDP / ICMP / IP)<br/>PID + cgroup attribution"]
+    cskb["<b>cgroup_skb.bpf.c</b><br/>cgroup_skb ingress/egress<br/>sock_create / sock_release"]
+    ctrace["<b>cgroup.bpf.c</b><br/>raw_tracepoint/cgroup_mkdir"]
+    tc -.- common
+    xdp -.- common
+    kprobe -.- common
+    cskb -.- common
+  end
+
+  subgraph kernel["Kernel attach surfaces"]
+    direction LR
+    nic{{"NIC RX / TX path<br/>(driver, XDP, TC qdisc)"}}
+    l4fns{{"Kernel L4 / IP funcs<br/>tcp_sendmsg, tcp_cleanup_rbuf,<br/>tcp_retransmit_skb,<br/>ip{6}_send_skb, skb_consume_udp,<br/>__icmp_send, icmp{v6}_rcv,<br/>ip{6}_local_out, ip{v6}_rcv"}}
+    inet_sk{{"inet_sock_create<br/>inet_sock_release"}}
+    cg_mk{{"cgroup_mkdir<br/>raw tracepoint"}}
+  end
+
+  mainEntry --> probe
+  mainEntry -.->|"load-time patch via spec.Variables"| common
+
+  probe -->|"AttachTCX"| tc
+  probe -->|"AttachXDP"| xdp
+  probe -->|"link.Kprobe &#215; 14"| kprobe
+  probe -->|"AttachCgroup"| cskb
+  probe -->|"AttachRawTracepoint"| ctrace
+
+  tc --> nic
+  xdp --> nic
+  kprobe --> l4fns
+  cskb --> inet_sk
+  cskb --> nic
+  ctrace --> cg_mk
+
+  common ==>|"update_val (per-CPU)"| pktcnt
+  cskb ==>|"cookie write"| sockinfo
+  ctrace ==>|"perf_event_output"| perf
+
+  pktcnt ==>|"BatchLookup + sum"| mapr
+  perf ==>|"perf reader"| cgrouply
+
+  mapr --> output
+  mapr --> tui
+  cgrouply -.->|"id &#8594; path"| output
+  cgrouply -.-> tui
+
+  classDef goNode fill:#d6e9f9,stroke:#4a78b5,color:#0a2a52
+  classDef mapNode fill:#fde2c8,stroke:#c87a35,color:#5c2f0c
+  classDef ebpfNode fill:#d9f0d3,stroke:#4a9a3d,color:#163a13
+  classDef commonNode fill:#c6e7bc,stroke:#4a9a3d,color:#163a13
+  classDef kernNode fill:#efe1f7,stroke:#735a9c,color:#28194d
+
+  class mainEntry,probe,mapr,cgrouply,output,tui goNode
+  class pktcnt,sockinfo,perf mapNode
+  class tc,xdp,kprobe,cskb,ctrace ebpfNode
+  class common commonNode
+  class nic,l4fns,inet_sk,cg_mk kernNode
+```
+
+Reading the diagram:
+
+- **Solid arrows** (`-->`) are control flow: `parseFlags` &#8594; mode select &#8594; attach the right BPF link object to the kernel surface.
+- **Thick arrows** (`==>`) are the data plane: programs `update_val` into `pkt_count` (per-CPU LRU hash), userspace pulls via `BatchLookup` (kernel &#8805; 5.6) and falls back to an iterator on older kernels.
+- **Dotted arrows** (`-.->`) are auxiliary: load-time variable patches on the BPF spec, `#include`s of the shared header, and the cgroup-id &#8594; path lookup overlay in `output`/`tui`.
+
 ## Talks
 
 The author has given several eBPF talks, available below along with the accompanying [slides](https://dkorunic.net/pdf/Korunic_eBPF.pdf):
