@@ -26,19 +26,11 @@ func mkEntry(proto string, srcPort, dstPort uint16) statEntry {
 	}
 }
 
-//nolint:gochecknoinits // outputPlain dereferences flag pointers; must initialise before any test runs.
-func init() {
-	f := false
-	s := ""
-	useKProbes = &f
-	useCGroup = &s
-}
-
 func TestOutputPlainIPsecESP(t *testing.T) {
 	t.Parallel()
 
 	// SPI = 0xA1B2C3D4 → src_port=0xA1B2, dst_port=0xC3D4
-	out := outputPlain([]statEntry{mkEntry("IPSEC-ESP", 0xA1B2, 0xC3D4)})
+	out := outputPlain([]statEntry{mkEntry("IPSEC-ESP", 0xA1B2, 0xC3D4)}, false)
 
 	for _, want := range []string{
 		"proto: IPSEC-ESP",
@@ -55,7 +47,7 @@ func TestOutputPlainIPsecESP(t *testing.T) {
 func TestOutputPlainIPsecAH(t *testing.T) {
 	t.Parallel()
 
-	out := outputPlain([]statEntry{mkEntry("IPSEC-AH", 0x1234, 0x5678)})
+	out := outputPlain([]statEntry{mkEntry("IPSEC-AH", 0x1234, 0x5678)}, false)
 
 	for _, want := range []string{
 		"proto: IPSEC-AH",
@@ -70,7 +62,7 @@ func TestOutputPlainIPsecAH(t *testing.T) {
 func TestOutputPlainGRE(t *testing.T) {
 	t.Parallel()
 
-	out := outputPlain([]statEntry{mkEntry("GRE", 0x0800, 0x0000)})
+	out := outputPlain([]statEntry{mkEntry("GRE", 0x0800, 0x0000)}, false)
 
 	for _, want := range []string{
 		"proto: GRE",
@@ -86,7 +78,7 @@ func TestOutputPlainGRE(t *testing.T) {
 func TestOutputPlainOSPF(t *testing.T) {
 	t.Parallel()
 
-	out := outputPlain([]statEntry{mkEntry("OSPFIGP", 1, 2)})
+	out := outputPlain([]statEntry{mkEntry("OSPFIGP", 1, 2)}, false)
 
 	for _, want := range []string{
 		"proto: OSPFIGP",
@@ -102,7 +94,7 @@ func TestOutputPlainOSPF(t *testing.T) {
 func TestOutputPlainARP(t *testing.T) {
 	t.Parallel()
 
-	out := outputPlain([]statEntry{mkEntry("ARP", 1, 0)})
+	out := outputPlain([]statEntry{mkEntry("ARP", 1, 0)}, false)
 
 	for _, want := range []string{
 		"proto: ARP",
@@ -117,7 +109,7 @@ func TestOutputPlainARP(t *testing.T) {
 func TestOutputPlainTCPUnchanged(t *testing.T) {
 	t.Parallel()
 
-	out := outputPlain([]statEntry{mkEntry("TCP", 12345, 80)})
+	out := outputPlain([]statEntry{mkEntry("TCP", 12345, 80)}, false)
 
 	for _, want := range []string{
 		"proto: TCP",

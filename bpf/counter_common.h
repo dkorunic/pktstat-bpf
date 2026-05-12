@@ -144,9 +144,12 @@ parse_arp(void *l3, void *data_end, statkey *key) {
     return false;
   }
 
-  if (bpf_ntohs(arp->ar_hrd) != 1) return false;
-  if (bpf_ntohs(arp->ar_pro) != ETH_P_IP) return false;
-  if (arp->ar_hln != 6 || arp->ar_pln != 4) return false;
+  if (bpf_ntohs(arp->ar_hrd) != 1)
+    return false;
+  if (bpf_ntohs(arp->ar_pro) != ETH_P_IP)
+    return false;
+  if (arp->ar_hln != 6 || arp->ar_pln != 4)
+    return false;
 
   // Payload: sha[6] spa[4] tha[6] tpa[4] = 20 bytes.
   void *payload = (void *)arp + sizeof(*arp);
@@ -155,14 +158,14 @@ parse_arp(void *l3, void *data_end, statkey *key) {
   }
 
   __be32 spa, tpa;
-  __builtin_memcpy(&spa, payload + 6,  4);
+  __builtin_memcpy(&spa, payload + 6, 4);
   __builtin_memcpy(&tpa, payload + 16, 4);
 
   __builtin_memset(key, 0, sizeof(*key));
   MAP_V4_IN_V6(key->srcip, spa);
   MAP_V4_IN_V6(key->dstip, tpa);
 
-  key->proto    = PROTO_ARP_FAKE;
+  key->proto = PROTO_ARP_FAKE;
   key->src_port = bpf_ntohs(arp->ar_op);
   key->dst_port = 0;
   return true;
@@ -239,7 +242,8 @@ process_ip6(struct ipv6hdr *ip6, void *data_end, statkey *key) {
   key->srcip = ip6->saddr;
   key->dstip = ip6->daddr;
 
-  // Ext-header sizes: HopByHop/Routing/DstOpts = (hdr_ext_len+1)*8, Fragment = 8.
+  // Ext-header sizes: HopByHop/Routing/DstOpts = (hdr_ext_len+1)*8, Fragment
+  // = 8.
   __u8 nexthdr = ip6->nexthdr;
   void *transport = (void *)ip6 + sizeof(*ip6);
 
@@ -314,8 +318,7 @@ static inline __attribute__((always_inline)) void update_val(statkey *key,
     return;
   }
 
-  // BPF_NOEXIST race: losing inserter sees its own zeroed per-CPU slot,
-  // retry += gives correct sums after userspace aggregation.
+  // Lost BPF_NOEXIST race: += on this CPU's zeroed slot still sums correctly.
   statvalue initval = {.packets = 1, .bytes = size};
   if (unlikely(bpf_map_update_elem(&pkt_count, key, &initval, BPF_NOEXIST) !=
                0)) {
@@ -353,8 +356,7 @@ process_eth(void *data, void *data_end, __u64 pkt_len) {
   __u16 h_proto = bpf_ntohs(eth->h_proto);
   void *l3 = (void *)eth + sizeof(*eth);
 
-  // Unwrap up to two VLAN tags (802.1Q or QinQ). vlan_hdr is 4 bytes:
-  // (tci:16, encapsulated_proto:16); the encapsulated_proto replaces h_proto.
+  // Unwrap up to two VLAN tags (802.1Q / QinQ): tci:16, proto:16.
 #pragma unroll 2
   for (int i = 0; i < 2; i++) {
     if (h_proto != ETH_P_8021Q && h_proto != ETH_P_8021AD) {
@@ -404,8 +406,7 @@ static inline __attribute__((always_inline)) bool
 process_tcp(bool receive, struct sock *sk, statkey *key, pid_t pid) {
   __u16 family = BPF_CORE_READ(sk, __sk_common.skc_family);
 
-  // sk holds local in skc_(rcv_)saddr/skc_num, remote in skc_daddr/dport.
-  // Receive-direction flips local→dst / remote→src up-front.
+  // Receive flips local→dst / remote→src.
   struct in6_addr *src = receive ? &key->dstip : &key->srcip;
   struct in6_addr *dst = receive ? &key->srcip : &key->dstip;
 
@@ -427,7 +428,7 @@ process_tcp(bool receive, struct sock *sk, statkey *key, pid_t pid) {
 
   __u16 local_port = BPF_CORE_READ(sk, __sk_common.skc_num);
   if (unlikely(local_port == 0)) {
-    // Unbound sockets keep the source port in inet_sport (network order).
+    // Unbound socket: source port lives in inet_sport (network order).
     struct inet_sock *isk = (struct inet_sock *)sk;
     local_port = bpf_ntohs(BPF_CORE_READ(isk, inet_sport));
   }
@@ -451,7 +452,7 @@ process_tcp(bool receive, struct sock *sk, statkey *key, pid_t pid) {
 static inline __attribute__((always_inline)) bool
 process_udp_recv(bool receive, struct sk_buff *skb, statkey *key, pid_t pid,
                  struct udphdr **udphdr_out) {
-  // Cache the CO-RE chain: the compiler can't CSE across the relocation.
+  // Cache the CO-RE chain; compiler can't CSE across relocations.
   unsigned char *head = (unsigned char *)BPF_CORE_READ(skb, head);
   __u16 nh_off = BPF_CORE_READ(skb, network_header);
   __u16 th_off = BPF_CORE_READ(skb, transport_header);
@@ -460,7 +461,7 @@ process_udp_recv(bool receive, struct sk_buff *skb, statkey *key, pid_t pid,
 
   __u16 proto = BPF_CORE_READ(skb, protocol);
 
-  // Packet IP header holds src=sender, dst=us; flip for the send direction.
+  // Header has src=peer/dst=us; flip when sending.
   struct in6_addr *ip_src = receive ? &key->srcip : &key->dstip;
   struct in6_addr *ip_dst = receive ? &key->dstip : &key->srcip;
 
@@ -497,7 +498,7 @@ process_udp_recv(bool receive, struct sk_buff *skb, statkey *key, pid_t pid,
   key->proto = IPPROTO_UDP;
   key->pid = pid;
 
-  // Publish only on success so failures leave caller's pointer untouched.
+  // Publish only on success; failure leaves caller's pointer untouched.
   if (udphdr_out)
     *udphdr_out = udphdr;
 
@@ -560,8 +561,9 @@ process_icmp6(struct sk_buff *skb, statkey *key, pid_t pid) {
 // (TCP/UDP/ICMP have their own kprobes — counting here would double-count).
 //
 // __noinline: inlining tripped "R3 !read_ok" in the verifier on kernel 6.12.
-static __attribute__((noinline)) size_t
-process_l4_skb(struct sk_buff *skb, statkey *key, pid_t pid) {
+static __attribute__((noinline)) size_t process_l4_skb(struct sk_buff *skb,
+                                                       statkey *key,
+                                                       pid_t pid) {
   unsigned char *head = (unsigned char *)BPF_CORE_READ(skb, head);
   __u16 nh_off = BPF_CORE_READ(skb, network_header);
   __u16 proto_be = BPF_CORE_READ(skb, protocol);
@@ -585,7 +587,12 @@ process_l4_skb(struct sk_buff *skb, statkey *key, pid_t pid) {
     MAP_V4_IN_V6(key->dstip, ip4_dst);
 
     __u16 tot_len = bpf_ntohs(BPF_CORE_READ(iphdr, tot_len));
-    __u16 ihl_bytes = (__u16)(BPF_CORE_READ_BITFIELD_PROBED(iphdr, ihl) * 4);
+    __u8 ihl_raw = (__u8)BPF_CORE_READ_BITFIELD_PROBED(iphdr, ihl);
+    // ihl < 5 is malformed; match process_ip4 / __icmp_send.
+    if (unlikely(ihl_raw < 5)) {
+      return 0;
+    }
+    __u16 ihl_bytes = (__u16)ihl_raw * 4;
     ip_payload_len = (ihl_bytes <= tot_len) ? (size_t)(tot_len - ihl_bytes) : 0;
     break;
   }
@@ -593,8 +600,7 @@ process_l4_skb(struct sk_buff *skb, statkey *key, pid_t pid) {
     struct ipv6hdr *iphdr = (struct ipv6hdr *)(head + nh_off);
     ip_proto = BPF_CORE_READ(iphdr, nexthdr);
 
-    // Walk up to 2 ext headers via probe_read so ESP/AH/GRE/OSPF behind
-    // HopByHop/Routing/Fragment/DstOpts attribute correctly.
+    // Walk up to 2 ext headers so ESP/AH/GRE/OSPF behind them attribute.
     __u16 ext_skip = 0;
 #pragma unroll 2
     for (int i = 0; i < 2; i++) {
@@ -603,8 +609,8 @@ process_l4_skb(struct sk_buff *skb, statkey *key, pid_t pid) {
         break;
       }
       __u8 pair[2];
-      if (bpf_probe_read_kernel(pair, 2, head + nh_off + sizeof(*iphdr) +
-                                            ext_skip) != 0) {
+      if (bpf_probe_read_kernel(
+              pair, 2, head + nh_off + sizeof(*iphdr) + ext_skip) != 0) {
         return 0;
       }
       if (ip_proto == IPPROTO_FRAGMENT) {
@@ -625,8 +631,8 @@ process_l4_skb(struct sk_buff *skb, statkey *key, pid_t pid) {
     BPF_CORE_READ_INTO(&key->dstip, iphdr, daddr);
 
     __u16 payload_len = bpf_ntohs(BPF_CORE_READ(iphdr, payload_len));
-    ip_payload_len = (ext_skip <= payload_len) ? (size_t)(payload_len - ext_skip)
-                                               : 0;
+    ip_payload_len =
+        (ext_skip <= payload_len) ? (size_t)(payload_len - ext_skip) : 0;
     break;
   }
   default:
@@ -635,7 +641,7 @@ process_l4_skb(struct sk_buff *skb, statkey *key, pid_t pid) {
 
   key->proto = ip_proto;
   key->pid = pid;
-  // Port slots left zero; SPI/type/flags decode via probe_read deferred.
+  // Port slots left zero; SPI/type/flags decoded later via probe_read.
 
   return ip_payload_len;
 }

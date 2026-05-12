@@ -189,7 +189,7 @@ int BPF_KPROBE(__icmp_send, struct sk_buff *skb, __u8 type, __u8 code,
   }
   key.cgroupid = get_current_cgroup_id();
 
-  // RFC 792 / 1812: 8-byte ICMP header + orig IP header + up to 8 data bytes.
+  // RFC 792: 8B ICMP hdr + orig IP hdr + up to 8 data bytes.
   __u16 tot_len = bpf_ntohs(BPF_CORE_READ(iphdr, tot_len));
   __u16 ihl_bytes = ihl_raw * 4;
   __u16 payload = (ihl_bytes <= tot_len) ? (tot_len - ihl_bytes) : 0;
@@ -228,8 +228,7 @@ int BPF_KPROBE(icmp6_send, struct sk_buff *skb, __u8 type, __u8 code,
   }
   key.cgroupid = get_current_cgroup_id();
 
-  // RFC 4443 §2.4: 8-byte ICMPv6 header + as much orig packet as fits in
-  // the minimum IPv6 MTU (1280 - 40 - 8 = 1232 max body bytes).
+  // RFC 4443: 8B ICMPv6 hdr + orig packet, capped at min-MTU body (1232).
   __u16 payload_len = bpf_ntohs(BPF_CORE_READ(iphdr, payload_len));
   __u32 orig_len = (__u32)sizeof(struct ipv6hdr) + payload_len;
   __u32 max_body =

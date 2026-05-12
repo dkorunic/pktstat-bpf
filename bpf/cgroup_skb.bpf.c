@@ -45,14 +45,14 @@ process_cgroup_skb(struct __sk_buff *skb) {
   void *data_end = (void *)(long)skb->data_end;
   __u64 pkt_len = skb->len;
 
-  // cgroup_skb sees the packet at L3; skip the L2 parse in process_eth.
+  // cgroup_skb sees the packet at L3; bypass the eth parse.
   statkey key;
   if (!process_l3(data, data_end, bpf_ntohs(skb->protocol), &key)) {
     return;
   }
 
   __u64 cookie = bpf_get_socket_cookie(skb);
-  // Cookie 0 means no associated socket; skip to avoid stale-entry hits.
+  // Cookie 0 = no socket; skip to avoid stale-entry hits.
   if (likely(cookie != 0)) {
     sockinfo *ski = bpf_map_lookup_elem(&sock_info, &cookie);
     if (likely(ski)) {
@@ -61,8 +61,7 @@ process_cgroup_skb(struct __sk_buff *skb) {
     }
   }
 
-  // v2: skb-derived helper (cheap, correct in softirq). v1: task-walk
-  // fallback. Branch is folded at load time via cgrpfs_magic.
+  // Branch folded at load time via cgrpfs_magic.
   if (cgrpfs_magic == CGROUP2_FSMAGIC) {
     key.cgroupid = bpf_skb_cgroup_id(skb);
   } else {
@@ -75,7 +74,7 @@ process_cgroup_skb(struct __sk_buff *skb) {
 SEC("cgroup/sock_create")
 int cgroup_sock_create(struct bpf_sock *sk) {
   __u64 cookie = bpf_get_socket_cookie(sk);
-  // Top 32 bits = TGID (userspace PID); low 32 bits = kernel TID.
+  // High 32 bits hold TGID (userspace PID).
   sockinfo ski = {
       .pid = bpf_get_current_pid_tgid() >> 32,
       .comm = {0},

@@ -32,6 +32,13 @@ import (
 const (
 	batchSize   = 4096
 	minDuration = 1e-9 // 1 nanosecond floor to avoid division by zero in bitrate
+
+	// Initial cap for the statEntry result slice when the caller didn't pass a
+	// reuse buffer. mapMaxEntries can be 131072+ (or whatever --max-entries
+	// sets), which on a low-traffic system would mean a ~16 MB allocation per
+	// call holding mostly nothing. 4096 covers most steady-state workloads;
+	// append-grow handles the long tail.
+	initialStatsHint = 4096
 )
 
 type batchBuffers struct {
@@ -46,7 +53,32 @@ var (
 	checkBatchMapSupportOnce sync.Once
 
 	batchPool sync.Pool
+
+	// commIntern dedupes comm strings across all statEntry rows. Process names
+	// repeat heavily (a few dozen distinct values across 100k+ entries), so
+	// interning by the raw [16]int8 array means we only do the unsafe.Slice +
+	// trim + string allocation once per *distinct* comm rather than per entry.
+	commIntern   = make(map[[16]int8]string)
+	commInternMu sync.Mutex
 )
+
+// internComm returns a single shared string for each distinct [16]int8 comm
+// blob, materialising the string on first sight and reusing it thereafter.
+// addStats is the only caller and runs on the listMap goroutine, so the mutex
+// is uncontended in practice; we still hold it to be safe against future use.
+func internComm(bs [16]int8) string {
+	commInternMu.Lock()
+	defer commInternMu.Unlock()
+
+	if s, ok := commIntern[bs]; ok {
+		return s
+	}
+
+	s := bsliceToString(bs[:])
+	commIntern[bs] = s
+
+	return s
+}
 
 // sumPerCPUValue collapses a per-CPU statvalue vector into a single
 // aggregate. The pkt_count map is BPF_MAP_TYPE_LRU_PERCPU_HASH, so every
@@ -78,7 +110,7 @@ func checkBatchMapSupport(m *ebpf.Map) bool {
 
 	var cursor ebpf.MapBatchCursor
 
-	// BPF_MAP_LOOKUP_BATCH support requires v5.6 kernel
+	// BatchLookup needs v5.6+.
 	_, err := m.BatchLookup(&cursor, keys, values, nil)
 
 	return !errors.Is(err, ebpf.ErrNotSupported)
@@ -95,8 +127,7 @@ func checkBatchMapSupport(m *ebpf.Map) bool {
 // listMap is safe to call concurrently.
 func listMap(m *ebpf.Map, start time.Time, buf []statEntry) ([]statEntry, error) {
 	checkBatchMapSupportOnce.Do(func() {
-		// PossibleCPU must be resolved before allocating per-CPU value
-		// buffers; it depends on a one-time procfs read inside cilium/ebpf.
+		// Resolve before allocating per-CPU value buffers.
 		cpus, err := ebpf.PossibleCPU()
 		if err != nil || cpus < 1 {
 			cpus = 1
@@ -120,7 +151,7 @@ func listMap(m *ebpf.Map, start time.Time, buf []statEntry) ([]statEntry, error)
 		return listMapBatch(m, start, buf)
 	}
 
-	// fallback to regular eBPF map iteration which might get interrupted for BPF_MAP_TYPE_LRU_PERCPU_HASH
+	// Iterator fallback; may abort on LRU per-CPU churn.
 	return listMapIterate(m, start, buf)
 }
 
@@ -148,15 +179,12 @@ func listMapBatch(m *ebpf.Map, start time.Time, buf []statEntry) ([]statEntry, e
 	if buf != nil {
 		stats = buf[:0]
 	} else {
-		stats = make([]statEntry, 0, mapMaxEntries)
+		stats = make([]statEntry, 0, min(mapMaxEntries, initialStatsHint))
 	}
 
 	var cursor ebpf.MapBatchCursor
 
-	// BPF_MAP_LOOKUP_BATCH support requires v5.6 kernel. For per-CPU maps
-	// cilium/ebpf returns a flat slice of length count*possibleCPUs, where
-	// values[i*possibleCPUs : (i+1)*possibleCPUs] holds the per-CPU vector
-	// for keys[i].
+	// values is flat: per-CPU vector for keys[i] at [i*possibleCPUs : (i+1)*possibleCPUs].
 	for {
 		c, err := m.BatchLookup(&cursor, keys, values, nil)
 
@@ -192,7 +220,7 @@ func listMapBatch(m *ebpf.Map, start time.Time, buf []statEntry) ([]statEntry, e
 //   - error: an error if any occurred during map iteration, otherwise nil
 func listMapIterate(m *ebpf.Map, start time.Time, buf []statEntry) ([]statEntry, error) {
 	var key tcStatkey
-	// Per-CPU map iterator expects a slice of length PossibleCPU().
+	// Per-CPU iterator wants a slice of length PossibleCPU.
 	val := make([]tcStatvalue, possibleCPUs)
 
 	dur := time.Since(start).Seconds()
@@ -204,12 +232,11 @@ func listMapIterate(m *ebpf.Map, start time.Time, buf []statEntry) ([]statEntry,
 	if buf != nil {
 		stats = buf[:0]
 	} else {
-		stats = make([]statEntry, 0, mapMaxEntries)
+		stats = make([]statEntry, 0, min(mapMaxEntries, initialStatsHint))
 	}
 
 	iter := m.Iterate()
 
-	// build statEntry slice converting data where needed
 	for iter.Next(&key, &val) {
 		stats = addStats(stats, key, sumPerCPUValue(val), dur)
 	}
@@ -245,7 +272,7 @@ func addStats(stats []statEntry, key tcStatkey, val tcStatvalue, dur float64) []
 		Packets: val.Packets,
 		Bitrate: 8 * float64(val.Bytes) / dur,
 		Pid:     key.Pid,
-		Comm:    bsliceToString(key.Comm[:]),
+		Comm:    internComm(key.Comm),
 		CGroup:  cGroupToPath(key.Cgroupid),
 	})
 

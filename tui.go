@@ -25,6 +25,7 @@ package main
 import (
 	"fmt"
 	"strconv"
+	"sync"
 	"sync/atomic"
 	"time"
 
@@ -70,7 +71,6 @@ func drawTUI(pktCount *ebpf.Map, startTime time.Time) {
 
 	var tableSortIdx atomic.Int32 // 0 = bitrateSort (default)
 
-	// packet statistics
 	statsTable := tview.NewTable().
 		SetBorders(true).
 		SetSelectable(true, false).
@@ -113,7 +113,6 @@ func drawTUI(pktCount *ebpf.Map, startTime time.Time) {
 		return event
 	})
 
-	// info view
 	infoView := tview.NewTextView().
 		SetTextColor(tcell.ColorYellow)
 
@@ -129,7 +128,6 @@ func drawTUI(pktCount *ebpf.Map, startTime time.Time) {
 		infoView.SetText(fmt.Sprintf("TC (Traffic Control) eBPF mode on interface %v", *ifname))
 	}
 
-	// navigation
 	naviView := tview.NewTextView().
 		SetTextColor(tcell.ColorDimGray).
 		SetWrap(true).
@@ -137,14 +135,12 @@ func drawTUI(pktCount *ebpf.Map, startTime time.Time) {
 		SetDynamicColors(true)
 	naviView.SetText(naviText)
 
-	// grid layout
 	grid := tview.NewGrid().SetRows(2, 0, 3).
 		AddItem(infoView, 0, 0, 1, 1, 0, 0, false).
 		AddItem(statsTable, 1, 0, 1, 1, 0, 0, true).
 		AddItem(naviView, 2, 0, 1, 1, 0, 0, false)
 
-	// start the update loop; done is closed when app.Run() returns so the
-	// goroutine can exit instead of blocking on a stopped application.
+	// Closed when app.Run() returns so the updater goroutine can exit.
 	done := make(chan struct{})
 
 	go updateStatsTable(app, statsTable, &tableSortIdx, pktCount, startTime, done)
@@ -156,26 +152,24 @@ func drawTUI(pktCount *ebpf.Map, startTime time.Time) {
 	close(done)
 }
 
-// updateStatsTable starts an infinite loop that updates the given table with
-// packet statistics at regular intervals. The loop is stopped when the
-// application is stopped.
+// updateStatsTable starts a loop that reads the BPF map and pushes table
+// updates to the tview goroutine until done is closed.
 //
-// The table is populated with the following columns:
+// Allocation strategy:
+//   - statsBufs is a 2-slot rotation; processMap reuses the slot's backing
+//     array via the `buf` reuse hint, so steady-state snapshots are alloc-free.
+//   - slotMu[i] guards the buffer in statsBufs[i] across the boundary between
+//     "processMap is writing it" and "the most recent draw closure is still
+//     reading it". This closes a race where, under a slow draw or two-tick
+//     backlog, the next processMap would re-truncate the backing array
+//     mid-render (listMapBatch does `buf[:0]` then appends).
+//   - headerCells / bodyCells are lazily-grown tview cell pools, reused
+//     across redraws. When the body row count shrinks we detach the surplus
+//     rows from the table (RemoveRow from the bottom up) but keep them in
+//     the pool for re-attachment if N grows again.
 //
-//   - Bitrate (in Mbps)
-//   - Number of packets
-//   - Number of bytes
-//   - Protocol (TCP, UDP, ICMP, or Other)
-//   - Source IP
-//   - Destination IP
-//   - Type (ICMP echo request, ICMP echo reply, TCP SYN, TCP FIN, UDP, or Other)
-//   - Code (ICMP code, or 0 for non-ICMP packets)
-//   - PID (process ID)
-//   - Comm (process name)
-//   - CGroup (cgroup name)
-//
-// Note that the table is cleared and recreated on each iteration, so any cell
-// attributes are lost on each iteration.
+// Columns: bitrate, packets, bytes, proto, src, dst, type/spi/inner/opcode,
+// code/flags/version, plus pid/comm/cgroup when --kprobes or --cgroup is set.
 func updateStatsTable(app *tview.Application, table *tview.Table, tableSortIdx *atomic.Int32,
 	pktCount *ebpf.Map, startTime time.Time, done <-chan struct{},
 ) {
@@ -196,198 +190,169 @@ func updateStatsTable(app *tview.Application, table *tview.Table, tableSortIdx *
 		"cgroup",  // column 10, only kprobes and cgroup
 	}
 
-	// remove pid, comm and cgroup columns if not in use
+	// Drop pid/comm/cgroup columns when not in --kprobes / --cgroup mode.
 	if !*useKProbes && *useCGroup == "" {
 		headers = headers[:8]
 	}
 
-	// Hoist mode check out of the inner row loop: these flags are immutable after startup.
+	// Hoisted: flags are immutable after startup.
 	showProcInfo := *useKProbes || *useCGroup != ""
 
-	// Double-buffer the stats slice to avoid per-tick allocations in steady state.
-	// statsBufs[bufIdx] is passed as a reuse hint to processMap; the (possibly grown)
-	// slice is stored back after each call. bufIdx advances before the draw is queued,
-	// so the slot handed to processMap next tick is from two ticks ago — well after
-	// its draw has completed (draws finish in <100 ms; tick interval is ≥1 s).
+	// 2-slot rotation; slotMu[i] is held from processMap-write until draw-done.
 	var statsBufs [2][]statEntry
+	var slotMu [2]sync.Mutex
 	bufIdx := 0
 
+	// Lazy cell pools; prevBodyRows tracks rows currently attached.
+	var (
+		headerCells  []*tview.TableCell
+		bodyCells    [][]*tview.TableCell
+		prevBodyRows int
+	)
+
+	numCols := len(headers)
+
 	for {
-		// read eBPF map outside the draw closure so the UI goroutine is not blocked on the syscall
+		// Wait for the previous draw on this slot to finish before reusing it.
+		slotMu[bufIdx].Lock()
+
+		// Read off the tview goroutine so it isn't blocked on the syscall.
 		snapshot, _ := processMap(pktCount, startTime, sortFuncs[tableSortIdx.Load()], statsBufs[bufIdx])
 		statsBufs[bufIdx] = snapshot
+
+		thisBuf := bufIdx
 		bufIdx ^= 1
 
-		// exit before queuing a draw if the app was stopped while processMap ran
+		// Skip queuing a draw if the app stopped during processMap.
 		select {
 		case <-done:
+			slotMu[thisBuf].Unlock()
 			return
 		default:
 		}
 
 		app.QueueUpdateDraw(func() {
-			table.Clear()
-
-			for i, v := range headers {
-				table.SetCell(0, i, &tview.TableCell{
-					Text:            v,
-					NotSelectable:   true,
-					Align:           tview.AlignLeft,
-					Color:           tcell.ColorLightYellow,
-					BackgroundColor: tcell.ColorDefault,
-					Attributes:      tcell.AttrBold,
-				})
+			defer slotMu[thisBuf].Unlock()
+			// Build header cells once.
+			if headerCells == nil {
+				headerCells = make([]*tview.TableCell, numCols)
+				for i, v := range headers {
+					headerCells[i] = &tview.TableCell{
+						Text:            v,
+						NotSelectable:   true,
+						Align:           tview.AlignLeft,
+						Color:           tcell.ColorLightYellow,
+						BackgroundColor: tcell.ColorDefault,
+						Attributes:      tcell.AttrBold,
+					}
+					table.SetCell(0, i, headerCells[i])
+				}
 			}
 
-			// addrBuf is reused across rows to build addr:port strings without
-			// intermediate string allocations; it lives for this draw call only.
+			// Reused per row to avoid per-tick string allocations.
 			var addrBuf []byte
 
 			for i, v := range snapshot {
-				// populate bitrate, packets, bytes and proto
-				table.SetCell(i+1, 0, tview.NewTableCell(formatBitrate(v.Bitrate)).
-					SetTextColor(tcell.ColorWhite).
-					SetExpansion(1))
+				switch {
+				case i >= len(bodyCells):
+					row := make([]*tview.TableCell, numCols)
+					for c := range row {
+						row[c] = tview.NewTableCell("").
+							SetTextColor(tcell.ColorWhite).
+							SetExpansion(1)
+						table.SetCell(i+1, c, row[c])
+					}
+					bodyCells = append(bodyCells, row)
+				case i >= prevBodyRows:
+					// Re-attach a row detached by an earlier shrink.
+					for c, cell := range bodyCells[i] {
+						table.SetCell(i+1, c, cell)
+					}
+				}
 
-				table.SetCell(i+1, 1, tview.NewTableCell(strconv.FormatUint(v.Packets, 10)).
-					SetTextColor(tcell.ColorWhite).
-					SetExpansion(1))
+				row := bodyCells[i]
 
-				table.SetCell(i+1, 2, tview.NewTableCell(strconv.FormatUint(v.Bytes, 10)).
-					SetTextColor(tcell.ColorWhite).
-					SetExpansion(1))
+				row[0].Text = formatBitrate(v.Bitrate)
+				row[1].Text = strconv.FormatUint(v.Packets, 10)
+				row[2].Text = strconv.FormatUint(v.Bytes, 10)
+				row[3].Text = v.Proto
 
-				table.SetCell(i+1, 3, tview.NewTableCell(v.Proto).
-					SetTextColor(tcell.ColorWhite).
-					SetExpansion(1))
-
-				// populate src, dst, src port, dst port, type and code
 				switch v.Proto {
 				case protoICMPv4, protoICMPv6:
-					table.SetCell(i+1, 4, tview.NewTableCell(v.SrcIP.String()).
-						SetTextColor(tcell.ColorWhite).
-						SetExpansion(1))
-
-					table.SetCell(i+1, 5, tview.NewTableCell(v.DstIP.String()).
-						SetTextColor(tcell.ColorWhite).
-						SetExpansion(1))
-
-					table.SetCell(i+1, 6, tview.NewTableCell(strconv.Itoa(int(v.SrcPort))).
-						SetTextColor(tcell.ColorWhite).
-						SetExpansion(1))
-
-					table.SetCell(i+1, 7, tview.NewTableCell(strconv.Itoa(int(v.DstPort))).
-						SetTextColor(tcell.ColorWhite).
-						SetExpansion(1))
+					addrBuf = v.SrcIP.AppendTo(addrBuf[:0])
+					row[4].Text = string(addrBuf)
+					addrBuf = v.DstIP.AppendTo(addrBuf[:0])
+					row[5].Text = string(addrBuf)
+					row[6].Text = strconv.Itoa(int(v.SrcPort))
+					row[7].Text = strconv.Itoa(int(v.DstPort))
 				case protoESP, protoAH:
-					table.SetCell(i+1, 4, tview.NewTableCell(v.SrcIP.String()).
-						SetTextColor(tcell.ColorWhite).
-						SetExpansion(1))
-
-					table.SetCell(i+1, 5, tview.NewTableCell(v.DstIP.String()).
-						SetTextColor(tcell.ColorWhite).
-						SetExpansion(1))
-
+					addrBuf = v.SrcIP.AppendTo(addrBuf[:0])
+					row[4].Text = string(addrBuf)
+					addrBuf = v.DstIP.AppendTo(addrBuf[:0])
+					row[5].Text = string(addrBuf)
 					spi := uint32(v.SrcPort)<<16 | uint32(v.DstPort)
-					table.SetCell(i+1, 6, tview.NewTableCell("0x"+strconv.FormatUint(uint64(spi), 16)).
-						SetTextColor(tcell.ColorWhite).
-						SetExpansion(1))
-
-					table.SetCell(i+1, 7, tview.NewTableCell("").
-						SetTextColor(tcell.ColorWhite).
-						SetExpansion(1))
+					addrBuf = append(addrBuf[:0], '0', 'x')
+					addrBuf = strconv.AppendUint(addrBuf, uint64(spi), 16)
+					row[6].Text = string(addrBuf)
+					row[7].Text = ""
 				case protoGRE:
-					table.SetCell(i+1, 4, tview.NewTableCell(v.SrcIP.String()).
-						SetTextColor(tcell.ColorWhite).
-						SetExpansion(1))
-
-					table.SetCell(i+1, 5, tview.NewTableCell(v.DstIP.String()).
-						SetTextColor(tcell.ColorWhite).
-						SetExpansion(1))
-
-					table.SetCell(i+1, 6, tview.NewTableCell(greInnerName(v.SrcPort)).
-						SetTextColor(tcell.ColorWhite).
-						SetExpansion(1))
-
-					table.SetCell(i+1, 7, tview.NewTableCell(fmt.Sprintf("0x%04x", v.DstPort)).
-						SetTextColor(tcell.ColorWhite).
-						SetExpansion(1))
+					addrBuf = v.SrcIP.AppendTo(addrBuf[:0])
+					row[4].Text = string(addrBuf)
+					addrBuf = v.DstIP.AppendTo(addrBuf[:0])
+					row[5].Text = string(addrBuf)
+					row[6].Text = greInnerName(v.SrcPort)
+					addrBuf = append(addrBuf[:0], '0', 'x')
+					addrBuf = appendHex16(addrBuf, v.DstPort)
+					row[7].Text = string(addrBuf)
 				case protoOSPF:
-					table.SetCell(i+1, 4, tview.NewTableCell(v.SrcIP.String()).
-						SetTextColor(tcell.ColorWhite).
-						SetExpansion(1))
-
-					table.SetCell(i+1, 5, tview.NewTableCell(v.DstIP.String()).
-						SetTextColor(tcell.ColorWhite).
-						SetExpansion(1))
-
-					table.SetCell(i+1, 6, tview.NewTableCell(ospfTypeName(v.SrcPort)).
-						SetTextColor(tcell.ColorWhite).
-						SetExpansion(1))
-
-					table.SetCell(i+1, 7, tview.NewTableCell("v"+strconv.Itoa(int(v.DstPort))).
-						SetTextColor(tcell.ColorWhite).
-						SetExpansion(1))
+					addrBuf = v.SrcIP.AppendTo(addrBuf[:0])
+					row[4].Text = string(addrBuf)
+					addrBuf = v.DstIP.AppendTo(addrBuf[:0])
+					row[5].Text = string(addrBuf)
+					row[6].Text = ospfTypeName(v.SrcPort)
+					addrBuf = append(addrBuf[:0], 'v')
+					addrBuf = strconv.AppendUint(addrBuf, uint64(v.DstPort), 10)
+					row[7].Text = string(addrBuf)
 				case protoARP:
-					table.SetCell(i+1, 4, tview.NewTableCell(v.SrcIP.String()).
-						SetTextColor(tcell.ColorWhite).
-						SetExpansion(1))
-
-					table.SetCell(i+1, 5, tview.NewTableCell(v.DstIP.String()).
-						SetTextColor(tcell.ColorWhite).
-						SetExpansion(1))
-
-					table.SetCell(i+1, 6, tview.NewTableCell(arpOpName(v.SrcPort)).
-						SetTextColor(tcell.ColorWhite).
-						SetExpansion(1))
-
-					table.SetCell(i+1, 7, tview.NewTableCell("").
-						SetTextColor(tcell.ColorWhite).
-						SetExpansion(1))
+					addrBuf = v.SrcIP.AppendTo(addrBuf[:0])
+					row[4].Text = string(addrBuf)
+					addrBuf = v.DstIP.AppendTo(addrBuf[:0])
+					row[5].Text = string(addrBuf)
+					row[6].Text = arpOpName(v.SrcPort)
+					row[7].Text = ""
 				default:
 					addrBuf = v.SrcIP.AppendTo(addrBuf[:0])
 					addrBuf = append(addrBuf, ':')
 					addrBuf = strconv.AppendUint(addrBuf, uint64(v.SrcPort), 10)
-					table.SetCell(i+1, 4, tview.NewTableCell(string(addrBuf)).
-						SetTextColor(tcell.ColorWhite).
-						SetExpansion(1))
+					row[4].Text = string(addrBuf)
 
 					addrBuf = v.DstIP.AppendTo(addrBuf[:0])
 					addrBuf = append(addrBuf, ':')
 					addrBuf = strconv.AppendUint(addrBuf, uint64(v.DstPort), 10)
-					table.SetCell(i+1, 5, tview.NewTableCell(string(addrBuf)).
-						SetTextColor(tcell.ColorWhite).
-						SetExpansion(1))
+					row[5].Text = string(addrBuf)
 
-					table.SetCell(i+1, 6, tview.NewTableCell("").
-						SetTextColor(tcell.ColorWhite).
-						SetExpansion(1))
-
-					table.SetCell(i+1, 7, tview.NewTableCell("").
-						SetTextColor(tcell.ColorWhite).
-						SetExpansion(1))
+					row[6].Text = ""
+					row[7].Text = ""
 				}
 
-				// populate pid, comm and cgroup
 				if showProcInfo {
 					pidStr := ""
 					if v.Pid > 0 {
 						pidStr = strconv.FormatInt(int64(v.Pid), 10)
 					}
 
-					table.SetCell(i+1, 8, tview.NewTableCell(pidStr).
-						SetTextColor(tcell.ColorWhite).
-						SetExpansion(1))
-
-					table.SetCell(i+1, 9, tview.NewTableCell(v.Comm).
-						SetTextColor(tcell.ColorWhite).
-						SetExpansion(1))
-
-					table.SetCell(i+1, 10, tview.NewTableCell(v.CGroup).
-						SetTextColor(tcell.ColorWhite).
-						SetExpansion(1))
+					row[8].Text = pidStr
+					row[9].Text = v.Comm
+					row[10].Text = v.CGroup
 				}
 			}
+
+			// Detach surplus rows; cells stay pooled for later re-attach.
+			for r := prevBodyRows; r > len(snapshot); r-- {
+				table.RemoveRow(r)
+			}
+
+			prevBodyRows = len(snapshot)
 		})
 
 		select {

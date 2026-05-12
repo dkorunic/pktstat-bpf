@@ -24,6 +24,7 @@ package main
 import (
 	"net"
 	"net/netip"
+	"os"
 	"strconv"
 	"strings"
 )
@@ -32,7 +33,7 @@ var protoNames = func() [256]string {
 	var a [256]string
 
 	for k, v := range map[uint8]string{
-		0:   "IPv4",
+		0:   "HOPOPT", // IPv6 hop-by-hop ext header (leaked when chain depth > unroll cap)
 		1:   "ICMPv4",
 		2:   "IGMP",
 		3:   "GGP",
@@ -152,22 +153,27 @@ func greInnerName(t uint16) string {
 	return "0x" + strconv.FormatUint(uint64(t), 16)
 }
 
-// bytesToAddr converts a 16-byte address to a netip.Addr.
-//
-// It takes an addr parameter of type [16]byte and returns a netip.Addr.
+// bytesToAddr decodes the BPF-side in6_addr-shaped storage into a netip.Addr,
+// unmapping the v4-in-v6 prefix (::ffff:a.b.c.d) back to a 4-byte IPv4 address.
 func bytesToAddr(addr [16]byte) netip.Addr {
 	return netip.AddrFrom16(addr).Unmap()
 }
 
-// findFirstEtherIface returns the name of the first non-loopback, up Ethernet interface.
-//
-// It iterates over all network interfaces and checks if each interface is up and not a loopback interface.
-// If an interface meets these criteria, its name is returned. If no suitable interface is found, the default
-// interface name is returned.
-//
-// Returns:
-//
-//	string: The name of the first non-loopback, up Ethernet interface.
+// hasNetDriver reports whether /sys/class/net/<name>/device/driver exists.
+// Pure virtual interfaces (veth, dummy, bridge, vxlan, …) don't expose a
+// driver here, so this is a coarse "is this hardware-backed?" filter.
+// Errors (non-Linux, missing sysfs) are treated as "no driver".
+func hasNetDriver(name string) bool {
+	_, err := os.Stat("/sys/class/net/" + name + "/device/driver")
+	return err == nil
+}
+
+// findFirstEtherIface returns the name of the first interface that looks like
+// a hardware Ethernet device: up, non-loopback, non-point-to-point, with a MAC
+// address and a kernel driver. Virtual interfaces (docker, veth, dummy, vxlan,
+// pure-tunnel) are skipped because attaching a TC/XDP program to them is
+// almost never what the user wants. If nothing matches, the build-time
+// defaultIface is returned and the user can override with -i.
 func findFirstEtherIface() string {
 	i, err := net.Interfaces()
 	if err != nil {
@@ -179,7 +185,19 @@ func findFirstEtherIface() string {
 			continue
 		}
 
+		if f.Flags&net.FlagPointToPoint != 0 {
+			continue
+		}
+
+		if len(f.HardwareAddr) == 0 {
+			continue
+		}
+
 		if strings.Contains(f.Name, "docker") {
+			continue
+		}
+
+		if !hasNetDriver(f.Name) {
 			continue
 		}
 

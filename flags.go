@@ -91,16 +91,15 @@ func parseFlags() {
 
 	switch *xdpMode {
 	case "", "auto", "best":
-		// kernel will select the best mode starting with Native and fallback to Generic
+		// Kernel picks Native, falls back to Generic.
 		xdpAttachFlags = XDPAttachModeNone
 	case "generic":
-		// SKB generic XDP mode
 		xdpAttachFlags = link.XDPGenericMode
 	case "native", "driver":
-		// XDP support from NIC driver required
+		// Requires NIC driver XDP support.
 		xdpAttachFlags = link.XDPDriverMode
 	case "offload", "hardware":
-		// only for NICs with HW XDP support
+		// Requires HW XDP support.
 		xdpAttachFlags = link.XDPOffloadMode
 	default:
 		fmt.Printf("Error invalid XDP mode: %v, pick from: auto, generic, native or offload\n", *xdpMode)

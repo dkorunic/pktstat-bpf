@@ -78,37 +78,37 @@ func processMap(m *ebpf.Map, start time.Time, sortFunc func([]statEntry), buf []
 	return stats, err
 }
 
-// bitrateSort sorts a slice of statEntry objects by their Bitrate field in descending order.
-//
-// Parameters:
-//
-//	stats []statEntry - the slice of statEntry objects to be sorted
+// sortDescBy sorts a slice of statEntry in descending order of the value
+// returned by key. NaN keys would violate strict weak ordering — callers must
+// guarantee non-NaN (true for Bitrate by construction, trivial for integers).
+func sortDescBy[K cmp.Ordered](stats []statEntry, key func(statEntry) K) {
+	slices.SortFunc(stats, func(a, b statEntry) int {
+		ka, kb := key(a), key(b)
+		if ka > kb {
+			return -1
+		}
+		if ka < kb {
+			return 1
+		}
+
+		return 0
+	})
+}
+
+// bitrateSort sorts a slice of statEntry objects by Bitrate (descending).
+// Bitrate is non-NaN by construction: bytes ≥ 0, dur ≥ 1e-9.
 func bitrateSort(stats []statEntry) {
-	slices.SortFunc(stats, func(a, b statEntry) int {
-		return cmp.Compare(b.Bitrate, a.Bitrate)
-	})
+	sortDescBy(stats, func(e statEntry) float64 { return e.Bitrate })
 }
 
-// packetSort sorts a slice of statEntry objects by their Packets field in descending order.
-//
-// Parameters:
-//
-//	stats []statEntry - the slice of statEntry objects to be sorted
+// packetSort sorts a slice of statEntry objects by Packets (descending).
 func packetSort(stats []statEntry) {
-	slices.SortFunc(stats, func(a, b statEntry) int {
-		return cmp.Compare(b.Packets, a.Packets)
-	})
+	sortDescBy(stats, func(e statEntry) uint64 { return e.Packets })
 }
 
-// bytesSort sorts a slice of statEntry objects by their Bytes field in descending order.
-//
-// Parameters:
-//
-//	stats []statEntry - the slice of statEntry objects to be sorted
+// bytesSort sorts a slice of statEntry objects by Bytes (descending).
 func bytesSort(stats []statEntry) {
-	slices.SortFunc(stats, func(a, b statEntry) int {
-		return cmp.Compare(b.Bytes, a.Bytes)
-	})
+	sortDescBy(stats, func(e statEntry) uint64 { return e.Bytes })
 }
 
 // srcIPSort sorts a slice of statEntry objects by their SrcIP field in ascending order.
@@ -133,6 +133,19 @@ func dstIPSort(stats []statEntry) {
 	})
 }
 
+// appendHex16 appends n to buf as a 4-digit, zero-padded lowercase hex string.
+// Replaces fmt.Sprintf("%04x", n) and the hand-rolled zero-pad loop in the
+// hot rendering paths; allocation-free when callers reuse buf.
+func appendHex16(buf []byte, n uint16) []byte {
+	const hex = "0123456789abcdef"
+	return append(buf,
+		hex[(n>>12)&0xF],
+		hex[(n>>8)&0xF],
+		hex[(n>>4)&0xF],
+		hex[n&0xF],
+	)
+}
+
 // formatBitrate formats the bitrate value into a human-readable string.
 //
 // It takes a float64 parameter representing the bitrate and returns a string.
@@ -152,28 +165,22 @@ func formatBitrate(b float64) string {
 }
 
 // outputPlain formats the provided statEntry slice into a plain text string.
-//
-// Each line contains information about a single protocol flow, including bitrate,
-// packets, bytes, protocol, source IP:port, destination IP:port, and ICMP type and
-// code if applicable. If kprobes are being used, the PID and comm fields are also
-// included. The output is sorted by bitrate in descending order.
-//
-// Parameters:
-//
-//	m []statEntry - the statEntry slice to be formatted
-//
-// Returns:
-//
-//	string - the formatted string
-func outputPlain(m []statEntry) string {
+// showProcessInfo controls whether the per-row pid/comm/cgroup suffix is
+// emitted (true under --kprobes / --cgroup). Caller knows the mode; passing
+// it in keeps outputPlain decoupled from the global flag pointers and makes
+// the function trivially testable without a flag-init shim.
+func outputPlain(m []statEntry, showProcessInfo bool) string {
 	var sb strings.Builder
 
 	perEntry := 128
-	if *useKProbes || *useCGroup != "" {
+	if showProcessInfo {
 		perEntry = 256
 	}
 
 	sb.Grow(len(m) * perEntry)
+
+	// Reused via AppendTo / AppendUint to avoid per-row string allocs.
+	var addrBuf []byte
 
 	for _, v := range m {
 		sb.WriteString("bitrate: ")
@@ -188,9 +195,11 @@ func outputPlain(m []statEntry) string {
 		switch v.Proto {
 		case protoICMPv4, protoICMPv6:
 			sb.WriteString(", src: ")
-			sb.WriteString(v.SrcIP.String())
+			addrBuf = v.SrcIP.AppendTo(addrBuf[:0])
+			sb.Write(addrBuf)
 			sb.WriteString(", dst: ")
-			sb.WriteString(v.DstIP.String())
+			addrBuf = v.DstIP.AppendTo(addrBuf[:0])
+			sb.Write(addrBuf)
 			sb.WriteString(", type: ")
 			sb.WriteString(strconv.FormatUint(uint64(v.SrcPort), 10))
 			sb.WriteString(", code: ")
@@ -198,52 +207,59 @@ func outputPlain(m []statEntry) string {
 		case protoESP, protoAH:
 			spi := uint32(v.SrcPort)<<16 | uint32(v.DstPort)
 			sb.WriteString(", src: ")
-			sb.WriteString(v.SrcIP.String())
+			addrBuf = v.SrcIP.AppendTo(addrBuf[:0])
+			sb.Write(addrBuf)
 			sb.WriteString(", dst: ")
-			sb.WriteString(v.DstIP.String())
+			addrBuf = v.DstIP.AppendTo(addrBuf[:0])
+			sb.Write(addrBuf)
 			sb.WriteString(", spi: 0x")
 			sb.WriteString(strconv.FormatUint(uint64(spi), 16))
 		case protoGRE:
 			sb.WriteString(", src: ")
-			sb.WriteString(v.SrcIP.String())
+			addrBuf = v.SrcIP.AppendTo(addrBuf[:0])
+			sb.Write(addrBuf)
 			sb.WriteString(", dst: ")
-			sb.WriteString(v.DstIP.String())
+			addrBuf = v.DstIP.AppendTo(addrBuf[:0])
+			sb.Write(addrBuf)
 			sb.WriteString(", inner: ")
 			sb.WriteString(greInnerName(v.SrcPort))
 			sb.WriteString(", flags: 0x")
-			flagsStr := strconv.FormatUint(uint64(v.DstPort), 16)
-			for i := len(flagsStr); i < 4; i++ {
-				sb.WriteByte('0')
-			}
-			sb.WriteString(flagsStr)
+			addrBuf = appendHex16(addrBuf[:0], v.DstPort)
+			sb.Write(addrBuf)
 		case protoOSPF:
 			sb.WriteString(", src: ")
-			sb.WriteString(v.SrcIP.String())
+			addrBuf = v.SrcIP.AppendTo(addrBuf[:0])
+			sb.Write(addrBuf)
 			sb.WriteString(", dst: ")
-			sb.WriteString(v.DstIP.String())
+			addrBuf = v.DstIP.AppendTo(addrBuf[:0])
+			sb.Write(addrBuf)
 			sb.WriteString(", type: ")
 			sb.WriteString(ospfTypeName(v.SrcPort))
 			sb.WriteString(", v")
 			sb.WriteString(strconv.FormatUint(uint64(v.DstPort), 10))
 		case protoARP:
 			sb.WriteString(", src: ")
-			sb.WriteString(v.SrcIP.String())
+			addrBuf = v.SrcIP.AppendTo(addrBuf[:0])
+			sb.Write(addrBuf)
 			sb.WriteString(", dst: ")
-			sb.WriteString(v.DstIP.String())
+			addrBuf = v.DstIP.AppendTo(addrBuf[:0])
+			sb.Write(addrBuf)
 			sb.WriteString(", op: ")
 			sb.WriteString(arpOpName(v.SrcPort))
 		default:
 			sb.WriteString(", src: ")
-			sb.WriteString(v.SrcIP.String())
-			sb.WriteByte(':')
-			sb.WriteString(strconv.FormatUint(uint64(v.SrcPort), 10))
+			addrBuf = v.SrcIP.AppendTo(addrBuf[:0])
+			addrBuf = append(addrBuf, ':')
+			addrBuf = strconv.AppendUint(addrBuf, uint64(v.SrcPort), 10)
+			sb.Write(addrBuf)
 			sb.WriteString(", dst: ")
-			sb.WriteString(v.DstIP.String())
-			sb.WriteByte(':')
-			sb.WriteString(strconv.FormatUint(uint64(v.DstPort), 10))
+			addrBuf = v.DstIP.AppendTo(addrBuf[:0])
+			addrBuf = append(addrBuf, ':')
+			addrBuf = strconv.AppendUint(addrBuf, uint64(v.DstPort), 10)
+			sb.Write(addrBuf)
 		}
 
-		if *useKProbes || *useCGroup != "" {
+		if showProcessInfo {
 			if v.Pid > 0 {
 				sb.WriteString(", pid: ")
 				sb.WriteString(strconv.FormatInt(int64(v.Pid), 10))
@@ -266,30 +282,16 @@ func outputPlain(m []statEntry) string {
 	return sb.String()
 }
 
-// outputJSON formats the provided statEntry slice into a JSON string.
-//
-// The JSON is created using the encoding/json package, marshaling the statEntry
-// slice into a JSON array. The output is a string.
-//
-// Parameters:
-//
-//	m []statEntry - the statEntry slice to be formatted
-//
-// Returns:
-//
-//	string - the JSON string representation of m
-//
-// jsonEncoder is a package-level encoder pre-configured for stdout, created once
-// to avoid a per-call allocation in outputJSON.
-var jsonEncoder = func() *json.Encoder {
+// outputJSON encodes m as a JSON array to os.Stdout. The encoder is built
+// per call so that we resolve os.Stdout at call time (a package-level encoder
+// would freeze the original fd at init, which would silently mis-write if
+// anything ever swaps os.Stdout); the allocation is negligible because
+// outputJSON is invoked once per CLI run.
+func outputJSON(m []statEntry) {
 	enc := json.NewEncoder(os.Stdout)
 	enc.SetEscapeHTML(false)
 
-	return enc
-}()
-
-func outputJSON(m []statEntry) {
-	if err := jsonEncoder.Encode(m); err != nil {
+	if err := enc.Encode(m); err != nil {
 		_, _ = fmt.Fprintf(os.Stderr, "Error encoding JSON output: %v\n", err)
 	}
 }
@@ -345,10 +347,9 @@ func (e *statEntry) MarshalJSON() ([]byte, error) {
 // Returns:
 //   - string: The resulting string after conversion and trimming.
 func bsliceToString(bs []int8) string {
-	// reinterpret []int8 as []byte without allocation (identical memory layout)
+	// Reinterpret []int8 → []byte without alloc; same layout.
 	b := unsafe.Slice((*byte)(unsafe.Pointer(unsafe.SliceData(bs))), len(bs))
 
-	// find null terminator of C string and slice to it
 	if i := bytes.IndexByte(b, 0); i >= 0 {
 		b = b[:i]
 	}

@@ -33,6 +33,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"syscall"
 	"time"
 
@@ -40,12 +41,13 @@ import (
 )
 
 const (
-	CGroupRootPath        = "/sys/fs/cgroup"
-	CGroupRootPathUnified = "/sys/fs/cgroup/unified"
-	PerfBufferPages       = 16
-	Cgroup1FsMagic        = 0x27e0eb
-	Cgroup2FsMagic        = 0x63677270
-	TmpFsMagic            = 0x1021994
+	CGroupRootPath           = "/sys/fs/cgroup"
+	CGroupRootPathUnified    = "/sys/fs/cgroup/unified"
+	PerfBufferPages          = 16
+	Cgroup1FsMagic           = 0x27e0eb
+	Cgroup2FsMagic           = 0x63677270
+	TmpFsMagic               = 0x1021994
+	cgroupRefreshMinInterval = 250 * time.Millisecond
 )
 
 var (
@@ -53,6 +55,11 @@ var (
 	cGroupCacheLock sync.RWMutex
 	cGroupRebuildMu sync.Mutex // serialises filesystem walks to avoid thundering herd
 	cGroupInitOnce  sync.Once
+
+	// Unix-nano timestamp of the most recently completed cgroupCacheRefresh.
+	// Bursts of LostSamples events (and the miss-path walk in cGroupToPath)
+	// coalesce against this to avoid thrashing the FS walk on busy systems.
+	lastCgroupRefreshNano atomic.Int64
 )
 
 // cGroupToPath takes a cgroup ID and returns the corresponding path in the cgroup filesystem.
@@ -62,12 +69,10 @@ var (
 //
 // The function is safe to call concurrently.
 func cGroupToPath(id uint64) string {
-	// ID 0 is not a valid Cgroup ID
 	if id == 0 {
 		return ""
 	}
 
-	// fetch from cache first
 	cGroupCacheLock.RLock()
 	p, ok := cGroupCache[id]
 	cGroupCacheLock.RUnlock()
@@ -76,14 +81,11 @@ func cGroupToPath(id uint64) string {
 		return p
 	}
 
-	// Serialise filesystem walks: only one goroutine rebuilds at a time.
-	// This prevents the thundering-herd where N concurrent misses each do a
-	// full walk and the last writer discards everyone else's results.
+	// Single-walker gate prevents a thundering-herd of duplicate FS walks.
 	cGroupRebuildMu.Lock()
 	defer cGroupRebuildMu.Unlock()
 
-	// Re-check after acquiring the rebuild lock; a concurrent goroutine may
-	// have already walked and populated the entry while we were waiting.
+	// Re-check: another goroutine may have populated `id` while we waited.
 	cGroupCacheLock.RLock()
 	p, ok = cGroupCache[id]
 	hint := len(cGroupCache)
@@ -93,25 +95,23 @@ func cGroupToPath(id uint64) string {
 		return p
 	}
 
-	// Build a fresh mapping outside any lock to avoid blocking readers during
-	// the filesystem walk. Pre-size with the current cache length as a hint to
-	// reduce rehashing when the map grows to a similar size.
+	// Walk outside the cache lock so readers aren't blocked.
 	fresh := make(map[uint64]string, hint)
 	_ = cGroupWalk(CGroupRootPath, fresh)
 
-	// Synthesise a negative cache entry if still missing after the walk.
-	p, ok = fresh[id]
-	if !ok {
-		p = "cgroup-id: " + strconv.FormatUint(id, 10)
-		fresh[id] = p
-	}
-
-	// Merge fresh entries into the existing cache rather than replacing it,
-	// so that entries written by cGroupWatcher between the walk start and now
-	// are preserved.
+	// Synthesise the placeholder AFTER merging so a concurrent watcher write
+	// for `id` is not clobbered by our "cgroup-id: N" fallback.
 	cGroupCacheLock.Lock()
 	maps.Copy(cGroupCache, fresh)
+
+	p, ok = cGroupCache[id]
+	if !ok {
+		p = "cgroup-id: " + strconv.FormatUint(id, 10)
+		cGroupCache[id] = p
+	}
 	cGroupCacheLock.Unlock()
+
+	lastCgroupRefreshNano.Store(time.Now().UnixNano())
 
 	return p
 }
@@ -127,7 +127,6 @@ func cGroupCacheInit() {
 		cGroupCache = make(map[uint64]string)
 		cGroupCacheLock.Unlock()
 
-		// initial cache refresh
 		cgroupCacheRefresh(CGroupRootPath)
 	})
 }
@@ -140,10 +139,25 @@ func cGroupCacheInit() {
 // cGroupWatcher wrote concurrently. cGroupRebuildMu is held for the duration
 // so that concurrent callers do not each trigger a redundant walk.
 //
+// Debounced via lastCgroupRefreshNano: when bursts of LostSamples events
+// arrive (or many cold misses queue behind one walker), all but the first
+// caller returns immediately rather than re-walking the filesystem.
+//
 // The function is safe to call concurrently.
 func cgroupCacheRefresh(dir string) {
+	now := time.Now().UnixNano()
+	if now-lastCgroupRefreshNano.Load() < int64(cgroupRefreshMinInterval) {
+		return
+	}
+
 	cGroupRebuildMu.Lock()
 	defer cGroupRebuildMu.Unlock()
+
+	// Re-check under the lock to coalesce queued callers.
+	now = time.Now().UnixNano()
+	if now-lastCgroupRefreshNano.Load() < int64(cgroupRefreshMinInterval) {
+		return
+	}
 
 	cGroupCacheLock.RLock()
 	hint := len(cGroupCache)
@@ -155,6 +169,8 @@ func cgroupCacheRefresh(dir string) {
 	cGroupCacheLock.Lock()
 	maps.Copy(cGroupCache, fresh)
 	cGroupCacheLock.Unlock()
+
+	lastCgroupRefreshNano.Store(time.Now().UnixNano())
 }
 
 // cGroupWalk walks the cgroup filesystem and returns a mapping of cgroup IDs to their corresponding paths.
@@ -166,7 +182,7 @@ func cgroupCacheRefresh(dir string) {
 func cGroupWalk(dir string, mapping map[uint64]string) error {
 	return filepath.WalkDir(dir, func(path string, d fs.DirEntry, err error) error {
 		if err != nil {
-			// ignore disappearing files/directories
+			// Tolerate races with rmdir.
 			if errors.Is(err, fs.ErrNotExist) {
 				return nil
 			}
@@ -180,7 +196,7 @@ func cGroupWalk(dir string, mapping map[uint64]string) error {
 
 		i, err := getInodeID(path)
 		if err != nil {
-			// ignore disappearing files/directories
+			// Tolerate races with rmdir.
 			if errors.Is(err, fs.ErrNotExist) {
 				return nil
 			}
@@ -236,20 +252,18 @@ func cGroupWatcher(objs cgroupObjects) (*perf.Reader, error) {
 		for {
 			r, err = rd.Read()
 			if err != nil {
-				// reader has been closed
 				if errors.Is(err, perf.ErrClosed) {
 					return
 				}
 
-				// log and avoid tight-spinning on persistent errors
+				// Sleep to avoid tight-spin on persistent errors.
 				log.Printf("cGroupWatcher: perf read error: %v", err)
 				time.Sleep(10 * time.Millisecond)
 
 				continue
 			}
 
-			// Perf buffer overflowed: lost samples mean we may have missed
-			// cgroup mkdir events, so rebuild the cache from the filesystem.
+			// Lost samples → may have missed mkdirs; rebuild from FS.
 			if r.LostSamples > 0 {
 				cgroupCacheRefresh(CGroupRootPath)
 
@@ -276,13 +290,17 @@ func cGroupWatcher(objs cgroupObjects) (*perf.Reader, error) {
 	return rd, nil
 }
 
-// getCgroupFsMagic returns the magic number of the cgroup filesystem.
+// getCgroupFsMagic detects which cgroup hierarchy is mounted at /sys/fs/cgroup
+// and returns the value to patch into the BPF-side `cgrpfs_magic` global so
+// the verifier can fold the v1/v2 branch at load time.
 //
-// The function takes no arguments and returns the magic number of the cgroup filesystem as a uint32, and an error if any occurred during the retrieval of the magic number.
+// Returns one of:
+//   - Cgroup1FsMagic — root is cgroup v1 (legacy); also returned for hybrid
+//     systemd setups where root is tmpfs but /sys/fs/cgroup/unified is v2,
+//     because v1 syscalls remain the working path under hybrid.
+//   - Cgroup2FsMagic — root is the cgroup v2 unified hierarchy.
 //
 // The function is safe to call concurrently.
-//
-// The possible return values are Cgroup1FsMagic (0x27e0eb) and Cgroup2FsMagic (0x63677270).
 func getCgroupFsMagic() (uint64, error) {
 	var stat syscall.Statfs_t
 	if err := syscall.Statfs(CGroupRootPath, &stat); err != nil {
@@ -293,17 +311,17 @@ func getCgroupFsMagic() (uint64, error) {
 	case Cgroup1FsMagic:
 		log.Printf("Detected cgroup v1 (legacy mode)")
 
-		return Cgroup1FsMagic, nil // for legacy cgroups v1 we use cgroup v1 syscalls
+		return Cgroup1FsMagic, nil
 	case Cgroup2FsMagic:
 		log.Printf("Detected cgroup v2 (unified mode)")
 
-		return Cgroup2FsMagic, nil // for unified cgroups v2 we use cgroup v2 syscalls
+		return Cgroup2FsMagic, nil
 	case TmpFsMagic:
 		err := syscall.Statfs(CGroupRootPathUnified, &stat)
 		if err == nil && stat.Type == Cgroup2FsMagic {
 			log.Printf("Detected cgroup v1 and v2 in hybrid mode")
 
-			return Cgroup1FsMagic, nil // for hybrid systemd mode we use cgroup v1 syscalls
+			return Cgroup1FsMagic, nil
 		}
 
 		log.Printf("Detected cgroup v1 (legacy)")

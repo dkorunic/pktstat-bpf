@@ -118,9 +118,7 @@ func startXDP(objs xdpObjects, iface *net.Interface, links []link.Link) []link.L
 		log.Fatalf("Error checking XDP support: %v", err)
 	}
 
-	// Attach count_packets to the network interface ingress, uses BPF_XDP
-	// NOTE: no egress support yet for BPF_XDP path
-	// NOTE: BPF_LINK_CREATE for XDP requires v5.9 kernel, but might work with older RHEL kernels
+	// XDP is ingress-only; BPF_LINK_CREATE needs v5.9+ (RHEL backports may work).
 	l, err = link.AttachXDP(link.XDPOptions{
 		Program:   objs.XdpCountPackets,
 		Interface: iface.Index,
@@ -169,8 +167,7 @@ func startTC(objs tcObjects, iface *net.Interface, links []link.Link) []link.Lin
 		log.Fatalf("Error checking SchedACT support: %v", err)
 	}
 
-	// NOTE: BPF_TCX_INGRESS and BPF_TCX_EGRESS require v6.6 kernel
-	// Attach count_packets to the network interface ingress, uses BPF_TCX_INGRESS
+	// TCX ingress + egress; requires v6.6+.
 	l, err = link.AttachTCX(link.TCXOptions{
 		Program:   objs.TcCountPackets,
 		Attach:    ebpf.AttachTCXIngress,
@@ -182,7 +179,6 @@ func startTC(objs tcObjects, iface *net.Interface, links []link.Link) []link.Lin
 
 	links = append(links, l)
 
-	// Attach count_packets to the network interface egresss, uses BPF_TCX_EGRESS
 	l, err = link.AttachTCX(link.TCXOptions{
 		Program:   objs.TcCountPackets,
 		Attach:    ebpf.AttachTCXEgress,
@@ -242,9 +238,7 @@ func startCgroup(objs cgroupSkbObjects, cgroupPath string, links []link.Link) []
 
 	links = append(links, l)
 
-	// sock_release is the lifecycle counterpart to sock_create (kernel ≥5.4).
-	// Best-effort: on older kernels the attach fails and we just rely on LRU
-	// eviction to age out stale sock_info entries.
+	// Best-effort sock_release (kernel ≥5.4); LRU eviction is the fallback.
 	l, err = link.AttachCgroup(link.CgroupOptions{
 		Program: objs.CgroupSockRelease,
 		Attach:  ebpf.AttachCgroupInetSockRelease,

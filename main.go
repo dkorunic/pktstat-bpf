@@ -69,9 +69,7 @@ func main() {
 		}
 	}()
 
-	// Warn when multiple mutually-exclusive capture modes are combined.
-	// The switch below silently picks the first matching case, so the user
-	// might not realise one of their flags is being ignored.
+	// Warn on conflicting capture-mode flags; switch silently picks first match.
 	{
 		captureModes := 0
 
@@ -92,47 +90,29 @@ func main() {
 		}
 	}
 
-	// pktCount is the eBPF map used to store packet statistics; it comes from
-	// whichever mode-specific object is loaded below.
+	// Set below from whichever mode-specific BPF object is loaded.
 	var pktCount *ebpf.Map
 
 	switch {
 	case *useCGroup != "":
-		// Detect cgroup fs magic once for both objects we are about to load.
-		// On failure we still proceed with 0, in which case the BPF programs
-		// fall back to the cgroup-v1 task-walk path.
+		// On failure we proceed with 0; BPF falls back to v1 task-walk.
 		cgroupFsMagic, err := getCgroupFsMagic()
 		if err != nil {
 			log.Printf("Unable to identify cgroup fs magic: %v", err)
 		}
 
-		// Load CGroup SKB eBPF object (cgroup_sock_create + cgroup_skb hooks)
-		cgroupSkbSpec, err := loadCgroupSkb()
-		if err != nil {
-			log.Fatalf("Error loading CGroupSKB eBPF spec: %v", err) //nolint:gocritic
-		}
-		if err := applyCgrpfsMagic(cgroupSkbSpec, cgroupFsMagic); err != nil {
-			log.Printf("Unable to set cgrpfs_magic on CGroupSKB spec: %v", err)
-		}
-		applyMaxEntries(cgroupSkbSpec)
+		cgroupSkbSpec := loadAndPatchSpec("CGroupSKB", loadCgroupSkb, cgroupFsMagic)
 
 		var objsCgroupSkb cgroupSkbObjects
 		if err := cgroupSkbSpec.LoadAndAssign(&objsCgroupSkb, nil); err != nil {
-			log.Fatalf("Error loading CGroupSKB eBPF objects: %v", err)
+			log.Fatalf("Error loading CGroupSKB eBPF objects: %v", err) //nolint:gocritic
 		}
 
 		defer func() { _ = objsCgroupSkb.Close() }()
 
 		pktCount = objsCgroupSkb.PktCount
 
-		// Load the cgroup_mkdir tracepoint object for cgroup path tracking
-		cgroupSpec, err := loadCgroup()
-		if err != nil {
-			log.Fatalf("Error loading cgroup eBPF spec: %v", err)
-		}
-		if err := applyCgrpfsMagic(cgroupSpec, cgroupFsMagic); err != nil {
-			log.Printf("Unable to set cgrpfs_magic on cgroup spec: %v", err)
-		}
+		cgroupSpec := loadAndPatchSpec("cgroup", loadCgroup, cgroupFsMagic)
 
 		var objsCgroup cgroupObjects
 		if err := cgroupSpec.LoadAndAssign(&objsCgroup, nil); err != nil {
@@ -155,21 +135,12 @@ func main() {
 
 	// KProbes w/ PID tracking
 	case *useKProbes:
-		// Detect cgroup fs magic once for both objects we are about to load.
 		cgroupFsMagic, err := getCgroupFsMagic()
 		if err != nil {
 			log.Printf("Unable to identify cgroup fs magic: %v", err)
 		}
 
-		// Load KProbe eBPF object
-		kprobeSpec, err := loadKprobe()
-		if err != nil {
-			log.Fatalf("Error loading KProbe eBPF spec: %v", err)
-		}
-		if err := applyCgrpfsMagic(kprobeSpec, cgroupFsMagic); err != nil {
-			log.Printf("Unable to set cgrpfs_magic on KProbe spec: %v", err)
-		}
-		applyMaxEntries(kprobeSpec)
+		kprobeSpec := loadAndPatchSpec("KProbe", loadKprobe, cgroupFsMagic)
 
 		var objsKprobe kprobeObjects
 		if err := kprobeSpec.LoadAndAssign(&objsKprobe, nil); err != nil {
@@ -180,14 +151,7 @@ func main() {
 
 		pktCount = objsKprobe.PktCount
 
-		// Load the cgroup_mkdir tracepoint object for cgroup path tracking
-		cgroupSpec, err := loadCgroup()
-		if err != nil {
-			log.Fatalf("Error loading cgroup eBPF spec: %v", err)
-		}
-		if err := applyCgrpfsMagic(cgroupSpec, cgroupFsMagic); err != nil {
-			log.Printf("Unable to set cgrpfs_magic on cgroup spec: %v", err)
-		}
+		cgroupSpec := loadAndPatchSpec("cgroup", loadCgroup, cgroupFsMagic)
 
 		var objsCgroup cgroupObjects
 		if err := cgroupSpec.LoadAndAssign(&objsCgroup, nil); err != nil {
@@ -232,14 +196,7 @@ func main() {
 			log.Fatalf("Error getting interface %q: %v", *ifname, err)
 		}
 
-		// Load XDP eBPF object
-		xdpSpec, err := loadXdp()
-		if err != nil {
-			log.Fatalf("Error loading XDP eBPF spec: %v", err)
-		}
-
-		applyMaxEntries(xdpSpec)
-		applyArpEnabled(xdpSpec)
+		xdpSpec := loadAndPatchSpec("XDP", loadXdp, 0)
 
 		var objsXDP xdpObjects
 		if err := xdpSpec.LoadAndAssign(&objsXDP, nil); err != nil {
@@ -259,14 +216,7 @@ func main() {
 			log.Fatalf("Error getting interface %q: %v", *ifname, err)
 		}
 
-		// Load TC eBPF object
-		tcSpec, err := loadTc()
-		if err != nil {
-			log.Fatalf("Error loading TC eBPF spec: %v", err)
-		}
-
-		applyMaxEntries(tcSpec)
-		applyArpEnabled(tcSpec)
+		tcSpec := loadAndPatchSpec("TC", loadTc, 0)
 
 		var objsTC tcObjects
 		if err := tcSpec.LoadAndAssign(&objsTC, nil); err != nil {
@@ -314,7 +264,7 @@ func main() {
 
 		m, err := processMap(pktCount, startTime, bitrateSort, nil)
 		if err != nil {
-			// reads from BPF_MAP_TYPE_LRU_HASH maps might get interrupted
+			// LRU per-CPU iteration can abort under churn.
 			if errors.Is(err, ebpf.ErrIterationAborted) {
 				_, _ = fmt.Fprint(os.Stderr, "Iteration aborted while reading eBPF map, output may be incomplete\n")
 			} else {
@@ -325,9 +275,33 @@ func main() {
 		if *jsonOutput {
 			outputJSON(m)
 		} else {
-			fmt.Print(outputPlain(m))
+			fmt.Print(outputPlain(m, *useKProbes || *useCGroup != ""))
 		}
 	}
+}
+
+// loadAndPatchSpec loads name's BPF CollectionSpec and applies every runtime
+// patch we might want (cgrpfs_magic, MaxEntries on pkt_count/sock_info,
+// arp_enabled). Each individual applyX is a no-op when the spec doesn't
+// expose the corresponding variable or map, so calling all three regardless
+// of mode is safe and removes the per-branch bookkeeping previously inlined
+// in main(). On any load error this fatals — load failures are unrecoverable.
+func loadAndPatchSpec(name string, loader func() (*ebpf.CollectionSpec, error),
+	cgroupFsMagic uint64,
+) *ebpf.CollectionSpec {
+	spec, err := loader()
+	if err != nil {
+		log.Fatalf("Error loading %s eBPF spec: %v", name, err)
+	}
+
+	if err := applyCgrpfsMagic(spec, cgroupFsMagic); err != nil {
+		log.Printf("Unable to set cgrpfs_magic on %s spec: %v", name, err)
+	}
+
+	applyMaxEntries(spec)
+	applyArpEnabled(spec)
+
+	return spec
 }
 
 // applyCgrpfsMagic rewrites the BPF-side `cgrpfs_magic` global constant on a
@@ -347,16 +321,24 @@ func applyCgrpfsMagic(spec *ebpf.CollectionSpec, magic uint64) error {
 	return v.Set(magic)
 }
 
-// applyMaxEntries patches the pkt_count map's MaxEntries from the --max-entries
-// flag. A zero value leaves the compile-time MAX_ENTRIES default in place.
-// Specs without a pkt_count map are silently skipped.
+// applyMaxEntries patches MaxEntries on every BPF map whose capacity should
+// scale with the --max-entries flag. A zero value leaves the compile-time
+// MAX_ENTRIES default in place. Maps not present in this spec are silently
+// skipped, so calling this on any of our specs is safe.
+//
+// Patched maps:
+//   - pkt_count: shared per-CPU LRU hash holding per-flow counters.
+//   - sock_info: cookie→PID/comm map in cgroup_skb mode; must scale with
+//     pkt_count or large --max-entries silently degrades to 131072 sockets.
 func applyMaxEntries(spec *ebpf.CollectionSpec) {
 	if *maxEntries == 0 {
 		return
 	}
 
-	if m, ok := spec.Maps["pkt_count"]; ok && m != nil {
-		m.MaxEntries = uint32(*maxEntries)
+	for _, name := range [...]string{"pkt_count", "sock_info"} {
+		if m, ok := spec.Maps[name]; ok && m != nil {
+			m.MaxEntries = uint32(*maxEntries)
+		}
 	}
 }
 
