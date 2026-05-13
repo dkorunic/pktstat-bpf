@@ -278,3 +278,40 @@ func addStats(stats []statEntry, key tcStatkey, val tcStatvalue, dur float64) []
 
 	return stats
 }
+
+// readFlowAppProto loads the entire flow_app_proto map into a Go map keyed
+// by the canonical tcFlowkey type. Returns nil on error; callers treat that
+// the same as an empty map (all entries get AppProto = "" / unknown).
+func readFlowAppProto(m *ebpf.Map) map[tcFlowkey]uint8 {
+	if m == nil {
+		return nil
+	}
+
+	out := make(map[tcFlowkey]uint8, m.MaxEntries()/8)
+
+	var k tcFlowkey
+	var v uint8
+
+	iter := m.Iterate()
+	for iter.Next(&k, &v) {
+		out[k] = v
+	}
+
+	// Iteration aborted under churn is non-fatal — worst case is a few rows
+	// missing AppProto until the next refresh.
+	_ = iter.Err()
+
+	return out
+}
+
+// statkeyToFlowkey derives the canonical 5-tuple flowkey from a tcStatkey,
+// dropping PID, comm, and cgroupid — L7 protocol is a property of the flow.
+func statkeyToFlowkey(k tcStatkey) tcFlowkey {
+	return tcFlowkey{
+		Srcip:   k.Srcip,
+		Dstip:   k.Dstip,
+		SrcPort: k.SrcPort,
+		DstPort: k.DstPort,
+		Proto:   k.Proto,
+	}
+}
