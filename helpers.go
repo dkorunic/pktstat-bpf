@@ -156,19 +156,31 @@ func greInnerName(t uint16) string {
 // L7 app-proto identifiers. Must match the APP_PROTO_* #defines in
 // bpf/counter.h. Stored as uint8 values in the flow_app_proto BPF map.
 const (
-	appProtoUnknown uint8 = 0
-	appProtoHTTP    uint8 = 1
-	appProtoTLS     uint8 = 2
-	appProtoQUIC    uint8 = 3
+	appProtoUnknown   uint8 = 0
+	appProtoHTTP      uint8 = 1
+	appProtoTLS       uint8 = 2
+	appProtoQUIC      uint8 = 3
+	appProtoSSH       uint8 = 4
+	appProtoRDP       uint8 = 5
+	appProtoPostgres  uint8 = 6
+	appProtoMQTT      uint8 = 7
+	appProtoWireGuard uint8 = 8
+	appProtoMemcached uint8 = 9
 )
 
 // appProtoNames maps the app-proto enum to display strings. Unknown
 // returns "" so callers can suppress the column / JSON field naturally.
 var appProtoNames = [...]string{
-	appProtoUnknown: "",
-	appProtoHTTP:    "HTTP",
-	appProtoTLS:     "TLS",
-	appProtoQUIC:    "QUIC",
+	appProtoUnknown:   "",
+	appProtoHTTP:      "HTTP",
+	appProtoTLS:       "TLS",
+	appProtoQUIC:      "QUIC",
+	appProtoSSH:       "SSH",
+	appProtoRDP:       "RDP",
+	appProtoPostgres:  "PostgreSQL",
+	appProtoMQTT:      "MQTT",
+	appProtoWireGuard: "WireGuard",
+	appProtoMemcached: "Memcached",
 }
 
 // appProtoToString returns the display name for an L7 app-proto identifier.

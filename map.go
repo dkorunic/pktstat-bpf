@@ -23,6 +23,7 @@ package main
 
 import (
 	"errors"
+	"log"
 	"sync"
 	"time"
 
@@ -46,18 +47,35 @@ type batchBuffers struct {
 	values []tcStatvalue
 }
 
+type l7BatchBuffers struct {
+	keys   []tcFlowkey
+	values []uint8
+}
+
 var (
 	haveBatchMapSupport      bool
 	mapMaxEntries            uint32
 	possibleCPUs             int
 	checkBatchMapSupportOnce sync.Once
 
-	batchPool sync.Pool
+	batchPool   sync.Pool
+	l7BatchPool sync.Pool
+
+	// flowAppProtoReuse holds the previous readFlowAppProto map for reuse.
+	// readFlowAppProto clears and refills it on each call instead of
+	// allocating fresh, eliminating per-tick GC pressure at high flow counts.
+	// Safe without a mutex: processMap is serialized (slotMu in TUI mode,
+	// single call in CLI mode) so at most one call is in flight at a time.
+	flowAppProtoReuse map[tcFlowkey]uint8
 
 	// commIntern dedupes comm strings across all statEntry rows. Process names
 	// repeat heavily (a few dozen distinct values across 100k+ entries), so
 	// interning by the raw [16]int8 array means we only do the unsafe.Slice +
 	// trim + string allocation once per *distinct* comm rather than per entry.
+	// The map is never pruned; in container-heavy environments with high process
+	// churn it grows proportionally to the number of distinct comm values seen
+	// over the lifetime of the process (bounded in practice to ~TASK_COMM_LEN
+	// unique 15-char names).
 	commIntern   = make(map[[16]int8]string)
 	commInternMu sync.Mutex
 )
@@ -139,6 +157,15 @@ func listMap(m *ebpf.Map, l7 *ebpf.Map, start time.Time, buf []statEntry) ([]sta
 				return &batchBuffers{
 					keys:   make([]tcStatkey, batchSize),
 					values: make([]tcStatvalue, batchSize*possibleCPUs),
+				}
+			},
+		}
+
+		l7BatchPool = sync.Pool{
+			New: func() any {
+				return &l7BatchBuffers{
+					keys:   make([]tcFlowkey, batchSize),
+					values: make([]uint8, batchSize),
 				}
 			},
 		}
@@ -264,11 +291,32 @@ func listMapIterate(m *ebpf.Map, appProtoByFlow map[tcFlowkey]uint8, start time.
 // Returns:
 //   - []statEntry: the updated slice of statEntry objects
 func addStats(stats []statEntry, key tcStatkey, val tcStatvalue, appProtoByFlow map[tcFlowkey]uint8, dur float64) []statEntry {
+	fk := statkeyToFlowkey(key)
+	proto, found := appProtoByFlow[fk]
+
+	// In KProbes mode, L7 detection may fire on either the send kprobe
+	// (ip_local_out: src=local, dst=remote) or the receive kprobe (ip_rcv:
+	// src=remote, dst=local). If the pkt_count row was written by the opposite
+	// kprobe, its key is the reverse of the cached flow_app_proto key. Try the
+	// reverse when the primary lookup misses. This covers both regular TCP
+	// (proto=6) and retransmit rows (proto=253, remapped to 6 by
+	// statkeyToFlowkey before the lookup above).
+	if !found && (key.Proto == protoTCPNum || key.Proto == protoTCPRetx) {
+		rev := tcFlowkey{
+			Srcip:   fk.Dstip,
+			Dstip:   fk.Srcip,
+			SrcPort: fk.DstPort,
+			DstPort: fk.SrcPort,
+			Proto:   fk.Proto, // already IPPROTO_TCP (6): statkeyToFlowkey remapped 253→6
+		}
+		proto = appProtoByFlow[rev]
+	}
+
 	stats = append(stats, statEntry{
 		SrcIP:    bytesToAddr(key.Srcip.In6U.U6Addr8),
 		DstIP:    bytesToAddr(key.Dstip.In6U.U6Addr8),
 		Proto:    protoToString(key.Proto),
-		AppProto: appProtoToString(appProtoByFlow[statkeyToFlowkey(key)]),
+		AppProto: appProtoToString(proto),
 		SrcPort:  key.SrcPort,
 		DstPort:  key.DstPort,
 		Bytes:    val.Bytes,
@@ -283,15 +331,63 @@ func addStats(stats []statEntry, key tcStatkey, val tcStatvalue, appProtoByFlow 
 }
 
 // readFlowAppProto loads the entire flow_app_proto map into a Go map keyed
-// by the canonical tcFlowkey type. Returns nil on error; callers treat that
-// the same as an empty map (all entries get AppProto = "" / unknown).
+// by the canonical tcFlowkey type. Returns nil when m is nil; on iteration
+// abort, returns whatever was read before the abort (callers treat a partial
+// or empty map the same — affected entries get AppProto = "" / unknown).
 func readFlowAppProto(m *ebpf.Map) map[tcFlowkey]uint8 {
 	if m == nil {
 		return nil
 	}
 
-	out := make(map[tcFlowkey]uint8)
+	out := flowAppProtoReuse
+	if out == nil {
+		out = make(map[tcFlowkey]uint8)
+	} else {
+		clear(out)
+	}
 
+	if haveBatchMapSupport {
+		readFlowAppProtoBatch(m, out)
+	} else {
+		readFlowAppProtoIter(m, out)
+	}
+
+	flowAppProtoReuse = out
+
+	return out
+}
+
+func readFlowAppProtoBatch(m *ebpf.Map, out map[tcFlowkey]uint8) {
+	batch := l7BatchPool.Get().(*l7BatchBuffers) //nolint:forcetypeassert
+	defer l7BatchPool.Put(batch)
+
+	keys := batch.keys
+	values := batch.values
+
+	var cursor ebpf.MapBatchCursor
+
+	for {
+		c, err := m.BatchLookup(&cursor, keys, values, nil)
+
+		for i := range keys[:c] {
+			out[keys[i]] = values[i]
+		}
+
+		if err != nil {
+			if errors.Is(err, ebpf.ErrKeyNotExist) {
+				break
+			}
+
+			if !errors.Is(err, ebpf.ErrIterationAborted) {
+				log.Printf("flow_app_proto map: unexpected batch error: %v", err)
+			}
+
+			break
+		}
+	}
+}
+
+func readFlowAppProtoIter(m *ebpf.Map, out map[tcFlowkey]uint8) {
 	var (
 		k tcFlowkey
 		v uint8
@@ -303,20 +399,39 @@ func readFlowAppProto(m *ebpf.Map) map[tcFlowkey]uint8 {
 	}
 
 	// Iteration aborted under churn is non-fatal — worst case is a few rows
-	// missing AppProto until the next refresh.
-	_ = iter.Err()
-
-	return out
+	// missing AppProto until the next refresh. Log other errors so kernel
+	// or programming faults don't disappear silently.
+	err := iter.Err()
+	if err != nil && !errors.Is(err, ebpf.ErrIterationAborted) {
+		log.Printf("flow_app_proto map: unexpected iteration error: %v", err)
+	}
 }
+
+// protoTCPRetx is the synthetic protocol number BPF assigns to TCP
+// retransmit rows (PROTO_TCP_RETX in bpf/counter.h). protoTCPNum is the
+// standard IPPROTO_TCP value those flows share in flow_app_proto.
+const (
+	protoTCPRetx uint8 = 253
+	protoTCPNum  uint8 = 6
+)
 
 // statkeyToFlowkey derives the canonical 5-tuple flowkey from a tcStatkey,
 // dropping PID, comm, and cgroupid — L7 protocol is a property of the flow.
+// The Pad field is left at its zero value (unset fields default to zero in Go
+// struct literals); it must stay zero for BPF map key equality to work
+// correctly, since the kernel compares the full struct byte-for-byte.
 func statkeyToFlowkey(k tcStatkey) tcFlowkey {
+	proto := k.Proto
+	// TCP retransmit rows share the same flow_app_proto entry as regular TCP.
+	if proto == protoTCPRetx {
+		proto = protoTCPNum
+	}
+
 	return tcFlowkey{
 		Srcip:   k.Srcip,
 		Dstip:   k.Dstip,
 		SrcPort: k.SrcPort,
 		DstPort: k.DstPort,
-		Proto:   k.Proto,
+		Proto:   proto,
 	}
 }

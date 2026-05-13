@@ -204,7 +204,7 @@ func cGroupWalk(dir string, mapping map[uint64]string) error {
 			return err
 		}
 
-		p := strings.TrimPrefix(path, CGroupRootPath)
+		p := strings.TrimPrefix(path, dir)
 		if p == "" {
 			p = "/"
 		}

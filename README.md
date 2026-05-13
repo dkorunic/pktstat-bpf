@@ -9,7 +9,7 @@
 
 pktstat-bpf is a lightweight replacement for the ncurses/libpcap-based [pktstat](https://github.com/dleonard0/pktstat), powered by Linux eBPF ([extended Berkeley Packet Filter](https://prototype-kernel.readthedocs.io/en/latest/bpf/)). It can gather packet statistics even under **very high traffic volumes** — typically several million packets per second on an average server. In high-volume scenarios such as DoS attacks, traditional packet capture solutions often become unreliable due to packet loss; eBPF-based capture is a more robust alternative.
 
-At the end of execution, the program displays per-IP and per-protocol statistics sorted by per-connection bitrate, packet count, and (source IP:port, destination IP:port) tuples.
+At the end of execution, the program displays per-IP and per-protocol statistics — including L7 protocol identification for HTTP, TLS, QUIC, SSH, RDP, PostgreSQL, MQTT, WireGuard, and Memcached — sorted by per-connection bitrate, packet count, and (source IP:port, destination IP:port) tuples.
 
 The program consists of [eBPF code written in C](bpf/) and a pure-Go userland component that parses and displays final IP/port/protocol/bitrate statistics. The Go component uses the [cilium/ebpf](https://github.com/cilium/ebpf) library to load and run the eBPF program and to interact with the eBPF map.
 
@@ -22,16 +22,16 @@ It is also possible to monitor a specific **cgroup** directly, with full support
 
 ## Architecture
 
-The diagram below sketches the two layers of pktstat-bpf. The Go userland (built on [cilium/ebpf](https://github.com/cilium/ebpf)) selects one of four mutually-exclusive capture modes, patches load-time constants on the corresponding BPF spec (`cgrpfs_magic`, `arp_enabled`, `max_entries`), attaches the program(s) to the right kernel surface, and then reads packet-counter data back through a single per-CPU LRU hash map. Every `bpf/*.c` program `#include`s `bpf/counter_common.h`, which is where `statkey` / `statvalue`, the `pkt_count` map, and the protocol parsers live — that shared header is what lets `map.go` consume every mode through a single type.
+The diagram below sketches the two layers of pktstat-bpf. The Go userland (built on [cilium/ebpf](https://github.com/cilium/ebpf)) selects one of four mutually-exclusive capture modes, patches load-time constants on the corresponding BPF spec (`cgrpfs_magic`, `arp_enabled`, map `MaxEntries`), attaches the program(s) to the right kernel surface, and then reads data back through two BPF maps: `pkt_count` (per-CPU LRU hash of per-flow counters) and `flow_app_proto` (non-per-CPU LRU hash of L7 protocol labels keyed by 5-tuple). Every `bpf/*.c` program `#include`s `bpf/counter_common.h`, which is where `statkey` / `statvalue` / `flowkey`, both maps, `sniff_app_proto`, and the protocol parsers live — that shared header is what lets `map.go` consume every mode through a single type.
 
 ```mermaid
 flowchart TB
 
   subgraph user["Userland (Go, package main)"]
     direction LR
-    mainEntry["<b>main.go</b><br/>mode select &amp; load<br/>cgroup &gt; kprobes &gt; xdp &gt; tc<br/>applies load-time patches:<br/>cgrpfs_magic / arp_enabled / max_entries"]
+    mainEntry["<b>main.go</b><br/>mode select &amp; load<br/>cgroup &gt; kprobes &gt; xdp &gt; tc<br/>applies load-time patches:<br/>cgrpfs_magic / arp_enabled / map MaxEntries"]
     probe["<b>probe.go</b><br/>startTC / startXDP / startKProbes<br/>startCgroup / startCGroupTrace"]
-    mapr["<b>map.go</b><br/>BatchLookup + iterator fallback<br/>sumPerCPUValue · commIntern"]
+    mapr["<b>map.go</b><br/>BatchLookup + iterator fallback<br/>sumPerCPUValue · commIntern<br/>readFlowAppProto[Batch] · statkeyToFlowkey"]
     cgrouply["<b>cgroup.go</b><br/>cgroup-id &#8594; path cache<br/>perf reader + /sys/fs/cgroup walk"]
     output["<b>output.go</b><br/>processMap, sorters<br/>JSON / Plain<br/>decodes ARP/ESP/AH/GRE/OSPF"]
     tui["<b>tui.go</b><br/>rivo/tview interactive<br/>--refresh, sort keys 0..4"]
@@ -40,13 +40,14 @@ flowchart TB
   subgraph maps["BPF maps &#8212; kernel &#8596; userland surface"]
     direction LR
     pktcnt[("<b>pkt_count</b><br/>LRU_PERCPU_HASH<br/>statkey &#8594; statvalue<br/>per-CPU; summed on read")]
+    flowproto[("<b>flow_app_proto</b><br/>LRU_HASH<br/>flowkey &#8594; uint8<br/>non-per-CPU; L7 label per 5-tuple")]
     sockinfo[("<b>sock_info</b><br/>cookie &#8594; {pid, comm}<br/>cgroup_skb mode only")]
     perf[("<b>cgroup_events</b><br/>PERF_EVENT_ARRAY<br/>cgroup_mkdir events")]
   end
 
   subgraph ebpf["eBPF programs (bpf/*.c, embedded via bpf2go)"]
     direction TB
-    common["<b>counter_common.h</b> &#8212; shared parser core<br/>statkey / statvalue · pkt_count map<br/>process_eth &#8594; process_ip4 / process_ip6<br/>parse_arp / parse_esp / parse_ah / parse_gre / parse_ospf<br/>process_l4_skb (__noinline)<br/>VLAN/QinQ unwrap; IPv6 ext-header walk<br/>load-time consts: cgrpfs_magic, arp_enabled"]
+    common["<b>counter_common.h</b> &#8212; shared parser core<br/>statkey / statvalue / flowkey<br/>pkt_count (PERCPU LRU) + flow_app_proto (LRU) maps<br/>sniff_app_proto · detect_and_cache_l7 (always_inline)<br/>detect_and_cache_l7_skb / extract_tcp_flowkey_skb (noinline)<br/>process_eth &#8594; process_ip4 / process_ip6<br/>parse_arp / parse_esp / parse_ah / parse_gre / parse_ospf<br/>process_l4_skb (noinline) · VLAN/QinQ unwrap<br/>load-time consts: cgrpfs_magic, arp_enabled"]
     tc["<b>tc.bpf.c</b><br/>TCX ingress + egress<br/>kernel &#8805; 6.6"]
     xdp["<b>xdp.bpf.c</b><br/>ingress only<br/>kernel &#8805; 5.9"]
     kprobe["<b>kprobe.bpf.c</b><br/>14 kprobes<br/>(TCP / UDP / ICMP / IP)<br/>PID + cgroup attribution"]
@@ -83,10 +84,12 @@ flowchart TB
   ctrace --> cg_mk
 
   common ==>|"update_val (per-CPU)"| pktcnt
+  common ==>|"detect_and_cache_l7[_skb]"| flowproto
   cskb ==>|"cookie write"| sockinfo
   ctrace ==>|"perf_event_output"| perf
 
   pktcnt ==>|"BatchLookup + sum"| mapr
+  flowproto ==>|"readFlowAppProto[Batch]"| mapr
   perf ==>|"perf reader"| cgrouply
 
   mapr --> output
@@ -101,7 +104,7 @@ flowchart TB
   classDef kernNode fill:#efe1f7,stroke:#735a9c,color:#28194d
 
   class mainEntry,probe,mapr,cgrouply,output,tui goNode
-  class pktcnt,sockinfo,perf mapNode
+  class pktcnt,flowproto,sockinfo,perf mapNode
   class tc,xdp,kprobe,cskb,ctrace ebpfNode
   class common commonNode
   class nic,l4fns,inet_sk,cg_mk kernNode
@@ -110,7 +113,7 @@ flowchart TB
 Reading the diagram:
 
 - **Solid arrows** (`-->`) are control flow: `parseFlags` &#8594; mode select &#8594; attach the right BPF link object to the kernel surface.
-- **Thick arrows** (`==>`) are the data plane: programs `update_val` into `pkt_count` (per-CPU LRU hash), userspace pulls via `BatchLookup` (kernel &#8805; 5.6) and falls back to an iterator on older kernels.
+- **Thick arrows** (`==>`) are the data plane: programs write counters into `pkt_count` (per-CPU LRU hash) and L7 labels into `flow_app_proto` (non-per-CPU LRU hash); userspace pulls both via `BatchLookup` (kernel &#8805; 5.6) and falls back to an iterator on older kernels.
 - **Dotted arrows** (`-.->`) are auxiliary: load-time variable patches on the BPF spec, `#include`s of the shared header, and the cgroup-id &#8594; path lookup overlay in `output`/`tui`.
 
 ## Talks
@@ -209,7 +212,7 @@ Use `--iface` to specify the network interface to capture on.
 
 `--cgroup <path>` measures ingress and egress traffic for the specified control group. Process command name and process ID are displayed when available.
 
-`--max-entries <n>` overrides the compile-time default size of the per-CPU LRU hash map (`pkt_count`) that backs all capture modes. A value of `0` keeps the default. Increase it on very busy systems where flow cardinality exceeds the default and you observe truncated output.
+`--max-entries <n>` overrides the compile-time default `MaxEntries` for all sized BPF maps: `pkt_count` (per-flow counters), `flow_app_proto` (L7 labels), and `sock_info` (PID attribution in cgroup mode). A value of `0` keeps the default. Increase it on very busy systems where flow cardinality exceeds the default and you observe truncated output.
 
 `--no-arp` disables ARP capture in TC and XDP modes. ARP is enabled by default; pass this flag to skip the `parse_arp` dispatch entirely (e.g. on hosts where ARP traffic is noise). The flag is a no-op in KProbes and cgroup modes, which do not see ARP.
 

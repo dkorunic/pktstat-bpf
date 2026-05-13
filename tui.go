@@ -55,7 +55,7 @@ const (
 //   - CGroup (cgroup name)
 //
 // The TUI is interactive: pressing 'q' or 'x' will exit the program,
-// pressing 'r' or 'l' will redraw the TUI, and pressing any other key will
+// pressing 'r' will redraw the TUI, and pressing any other key will
 // do nothing.
 // sortFuncs maps the atomic sort index to the corresponding sort function.
 var sortFuncs = [...]func([]statEntry){
@@ -215,6 +215,11 @@ func updateStatsTable(app *tview.Application, table *tview.Table, tableSortIdx *
 
 	for {
 		// Wait for the previous draw on this slot to finish before reusing it.
+		// If the draw takes longer than one tick period the goroutine blocks
+		// here rather than on the ticker, silently dropping that refresh cycle.
+		// This is intentional: skipping a refresh is safer than reading a
+		// partially-written snapshot. Effective refresh rate floors at
+		// max(draw_time, tick_period).
 		slotMu[bufIdx].Lock()
 
 		// Read off the tview goroutine so it isn't blocked on the syscall.

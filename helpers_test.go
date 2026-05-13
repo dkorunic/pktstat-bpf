@@ -90,6 +90,12 @@ func TestAppProtoToString(t *testing.T) {
 		{appProtoHTTP, "HTTP"},
 		{appProtoTLS, "TLS"},
 		{appProtoQUIC, "QUIC"},
+		{appProtoSSH, "SSH"},
+		{appProtoRDP, "RDP"},
+		{appProtoPostgres, "PostgreSQL"},
+		{appProtoMQTT, "MQTT"},
+		{appProtoWireGuard, "WireGuard"},
+		{appProtoMemcached, "Memcached"},
 		{99, ""},
 		{255, ""},
 	}

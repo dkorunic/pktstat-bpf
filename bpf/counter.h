@@ -74,10 +74,16 @@
 
 // L7 app-proto identifiers stored as values in flow_app_proto. Mirror in
 // helpers.go (appProto*). Keep these in lockstep with the Go side.
-#define APP_PROTO_UNKNOWN 0
-#define APP_PROTO_HTTP    1
-#define APP_PROTO_TLS     2
-#define APP_PROTO_QUIC    3
+#define APP_PROTO_UNKNOWN   0
+#define APP_PROTO_HTTP      1
+#define APP_PROTO_TLS       2
+#define APP_PROTO_QUIC      3
+#define APP_PROTO_SSH       4
+#define APP_PROTO_RDP       5
+#define APP_PROTO_POSTGRES  6
+#define APP_PROTO_MQTT      7
+#define APP_PROTO_WIREGUARD 8
+#define APP_PROTO_MEMCACHED 9
 
 // Bytes peeked from the L4 payload for L7 signature matching. 12 is the
 // minimum that covers QUIC (1 form byte + 4 version bytes + slack) and gives

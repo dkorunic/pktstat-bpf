@@ -201,6 +201,8 @@ sniff_app_proto(const __u8 *buf, __u32 peek_len, __u8 l4_proto) {
     case 0x48545450: // "HTTP"
       if (b4 == '/') return APP_PROTO_HTTP;
       break;
+    case 0x5353482D: // "SSH-" — SSH version banner (SSH-2.0-*, SSH-1.5-*, …)
+      return APP_PROTO_SSH;
     }
 
     // TLS record: type ∈ {0x14..0x17}, major=0x03, minor ∈ {0x00..0x04}.
@@ -209,16 +211,79 @@ sniff_app_proto(const __u8 *buf, __u32 peek_len, __u8 l4_proto) {
         buf[1] == 0x03 && buf[2] <= 0x04) {
       return APP_PROTO_TLS;
     }
+
+    // RDP: TPKT v3 header (0x03 0x00) + COTP Connection Request (0xE0) or
+    // Confirm (0xD0) PDU type at byte 5. Only the initial plaintext
+    // handshake is detectable; post-negotiation traffic appears as TLS.
+    if (buf[0] == 0x03 && buf[1] == 0x00 && peek_len >= 6 &&
+        (buf[5] == 0xE0 || buf[5] == 0xD0)) {
+      return APP_PROTO_RDP;
+    }
+
+    // Memcached binary: magic 0x80 (request) or 0x81 (response), opcode
+    // byte in the defined range [0x00, 0x26] (std + SASL), data_type
+    // field (byte 5) = 0x00 in all current implementations.
+    if (peek_len >= 6 && (buf[0] == 0x80 || buf[0] == 0x81) &&
+        buf[1] <= 0x26 && buf[5] == 0x00) {
+      return APP_PROTO_MEMCACHED;
+    }
+
+    if (peek_len >= 8) {
+      __u32 w2 = ((__u32)buf[4] << 24) | ((__u32)buf[5] << 16) |
+                 ((__u32)buf[6] << 8) | (__u32)buf[7];
+
+      // PostgreSQL StartupMessage: bytes[4:8] = protocol version 3.0
+      // (0x00030000), SSL request (0x04D2162F), or GSS request (0x04D2162E).
+      // Bytes[0:4] hold the total message length (small big-endian int,
+      // minimum 8). For version 3.0 we also validate the length field is in
+      // [8, 16 MiB) — a common bit pattern at bytes 4-7 would otherwise
+      // match. SSL/GSS magic values are distinctive enough to stand alone.
+      if ((w2 == 0x00030000 && w > 7 && w < 0x01000000) ||
+          w2 == 0x04D2162F || w2 == 0x04D2162E) {
+        return APP_PROTO_POSTGRES;
+      }
+
+      // MQTT CONNECT: fixed header 0x10, 1-byte remaining-length < 128
+      // (bit 7 = 0), 2-byte protocol-name length, then "MQTT" (v3.1.1/5.0,
+      // length = 4) or "MQIsdp" (v3.1, length = 6, protocol level 0x03 at
+      // byte 10).
+      if (buf[0] == 0x10 && (buf[1] & 0x80) == 0 && buf[2] == 0x00 &&
+          b4 == 'M' && buf[5] == 'Q' &&
+          ((buf[3] == 0x04 && buf[6] == 'T' && buf[7] == 'T') ||
+           (buf[3] == 0x06 && buf[6] == 'I' && buf[7] == 's' && peek_len > 10 && buf[10] == 0x03))) {
+        return APP_PROTO_MQTT;
+      }
+    }
   }
 
   if (l4_proto == IPPROTO_UDP) {
+    // DTLS record: same content types as TLS, major=0xFE, minor=0xFF (1.0)
+    // or 0xFD (1.2).
+    if ((buf[0] == 0x14 || buf[0] == 0x15 || buf[0] == 0x16 ||
+         buf[0] == 0x17) &&
+        buf[1] == 0xFE && (buf[2] == 0xFF || buf[2] == 0xFD)) {
+      return APP_PROTO_TLS;
+    }
+
     // QUIC long header form (bit 7) + RFC 9000 fixed bit (bit 6).
     if ((buf[0] & 0xC0) == 0xC0) {
       __u32 v = ((__u32)buf[1] << 24) | ((__u32)buf[2] << 16) |
                 ((__u32)buf[3] << 8) | (__u32)buf[4];
+      // v=1: QUICv1 (RFC 9000). v=0x6B3343CF: QUICv2 (RFC 9369).
+      // v=0: version-negotiation sentinel (RFC 9000 §6); intentionally
+      // included so VN packets are attributed to QUIC rather than UNKNOWN.
       if (v == 0x00000001 || v == 0x6B3343CF || v == 0x00000000) {
         return APP_PROTO_QUIC;
       }
+    }
+
+    // WireGuard: 4-byte little-endian message type with reserved bytes 1-3
+    // always zero. Detects Handshake Init (1), Response (2), and Cookie
+    // Reply (3). Type 4 (transport data) is excluded to limit false
+    // positives; once a flow is cached from a handshake packet the data
+    // packets inherit the label without re-sniffing.
+    if (w == 0x01000000 || w == 0x02000000 || w == 0x03000000) {
+      return APP_PROTO_WIREGUARD;
     }
   }
 
@@ -230,8 +295,17 @@ sniff_app_proto(const __u8 *buf, __u32 peek_len, __u8 l4_proto) {
 // TCP/UDP cases. `transport` points to the L4 header; `l4_hdr_len` is its
 // computed byte length (TCP doff*4, UDP 8). Bounds-checks against data_end.
 //
-// Skips the sniff when the flow is already cached, so the per-packet cost
-// after the first detected packet is one map lookup.
+// Skips the sniff when the flow is already cached (identified or UNKNOWN),
+// so the per-packet cost after the first packet with ≥ L7_PEEK_LEN payload
+// is one BPF_MAP_TYPE_LRU_HASH lookup. That map is non-per-CPU; on
+// multi-core systems hot flows will contend on the same cache line. This is
+// an accepted trade-off: per-flow state is rare-write/heavy-read, and the
+// alternative (LRU_PERCPU_HASH) would give inconsistent per-CPU results.
+//
+// Must remain always_inline: direct packet access (PTR_TO_PACKET /
+// PTR_TO_PACKET_END) cannot cross BPF-to-BPF call boundaries in TC/XDP
+// programs — the verifier loses the packet-pointer type information when
+// those pointers are passed as arguments to a noinline sub-program.
 static inline __attribute__((always_inline)) void
 detect_and_cache_l7(void *transport, void *data_end,
                     __u8 l4_proto, __u32 l4_hdr_len, const statkey *key) {
@@ -255,9 +329,10 @@ detect_and_cache_l7(void *transport, void *data_end,
   __builtin_memcpy(buf, payload, L7_PEEK_LEN);
 
   __u8 app = sniff_app_proto(buf, L7_PEEK_LEN, l4_proto);
-  if (app != APP_PROTO_UNKNOWN) {
-    bpf_map_update_elem(&flow_app_proto, &fk, &app, BPF_ANY);
-  }
+  // Cache even APP_PROTO_UNKNOWN to prevent re-sniffing every packet on
+  // unrecognised flows. BPF_NOEXIST is safe under races: all concurrent
+  // writers produce the same value, so losing the race is harmless.
+  bpf_map_update_elem(&flow_app_proto, &fk, &app, BPF_NOEXIST);
 }
 
 // detect_and_cache_l7_skb is the skb-form counterpart for KProbes. Reads the
@@ -268,9 +343,15 @@ detect_and_cache_l7(void *transport, void *data_end,
 // noinline: an inlined version of the body trips the same "R3 !read_ok"
 // verifier issue on kernel 6.12 that process_l4_skb works around. Keep
 // noinline unless re-tested across all supported kernels.
+//
+// Direction: the flowkey derived from `key` is direction-sensitive. All UDP
+// callers build `key` via process_udp_recv, which normalises orientation to
+// {src=remote, dst=local} regardless of send/receive direction. New callers
+// must preserve this convention; inconsistent orientation would produce
+// duplicate opposite-direction entries in flow_app_proto under BPF_NOEXIST.
 static __attribute__((noinline)) void
 detect_and_cache_l7_skb(struct sk_buff *skb, __u32 payload_off,
-                        __u8 l4_proto, const statkey *key) {
+                        const statkey *key) {
   flowkey fk = {};
   fk.srcip = key->srcip;
   fk.dstip = key->dstip;
@@ -283,38 +364,46 @@ detect_and_cache_l7_skb(struct sk_buff *skb, __u32 payload_off,
   }
 
   unsigned char *head = (unsigned char *)BPF_CORE_READ(skb, head);
+  // tail is an offset from head on all supported architectures
+  // (NET_SKBUFF_DATA_USES_OFFSET is set on amd64 / arm64). Bail early for
+  // packets whose linear data ends before L7_PEEK_LEN payload bytes — avoids
+  // reading garbage from the kernel allocator (e.g., TCP SYN frames).
+  __u32 tail = (__u32)BPF_CORE_READ(skb, tail);
+  if (payload_off + L7_PEEK_LEN > tail) {
+    return;
+  }
 
   __u8 buf[L7_PEEK_LEN];
   if (bpf_probe_read_kernel(buf, sizeof(buf), head + payload_off) != 0) {
     return;
   }
 
-  __u8 app = sniff_app_proto(buf, L7_PEEK_LEN, l4_proto);
-  if (app != APP_PROTO_UNKNOWN) {
-    bpf_map_update_elem(&flow_app_proto, &fk, &app, BPF_ANY);
-  }
+  __u8 app = sniff_app_proto(buf, L7_PEEK_LEN, key->proto);
+  bpf_map_update_elem(&flow_app_proto, &fk, &app, BPF_NOEXIST);
 }
 
-// extract_l4_flowkey_skb fills `key` (srcip, dstip, src_port, dst_port,
-// proto) from an skb that has an IPv4 or IPv6 + TCP/UDP header chain.
-// Returns the byte offset from skb->head at which the L7 payload begins,
-// or 0 if the skb isn't TCP/UDP / isn't well-formed for our purposes.
-// Used by the kprobe-side TCP/UDP L7 detection in ip_local_out/ip_rcv.
+// extract_tcp_flowkey_skb fills `key` (srcip, dstip, src_port, dst_port,
+// proto) from an skb that carries an IPv4 or IPv6 + TCP header chain.
+// Returns the byte offset from skb->head at which the TCP payload begins,
+// or 0 if the skb isn't TCP or isn't well-formed for our purposes.
+// Non-TCP protocols return 0 immediately, avoiding unnecessary header reads
+// that would be discarded by the caller (sniff_tcp_skb).
 static __attribute__((noinline)) __u32
-extract_l4_flowkey_skb(struct sk_buff *skb, statkey *key) {
+extract_tcp_flowkey_skb(struct sk_buff *skb, statkey *key) {
   unsigned char *head = (unsigned char *)BPF_CORE_READ(skb, head);
   __u16 nh_off = BPF_CORE_READ(skb, network_header);
+  // transport_header is set by the IP stack before ip_local_out / ip_rcv are
+  // called; it is valid for TCP skbs that pass the protocol check below.
   __u16 th_off = BPF_CORE_READ(skb, transport_header);
   __u16 proto_be = BPF_CORE_READ(skb, protocol);
 
   __u8 ip_proto;
-  __u32 l4_hdr_len;
 
   switch (bpf_ntohs(proto_be)) {
   case ETH_P_IP: {
     struct iphdr *iphdr = (struct iphdr *)(head + nh_off);
     ip_proto = BPF_CORE_READ(iphdr, protocol);
-    if (ip_proto != IPPROTO_TCP && ip_proto != IPPROTO_UDP) {
+    if (ip_proto != IPPROTO_TCP) {
       return 0;
     }
     __be32 sa = BPF_CORE_READ(iphdr, saddr);
@@ -326,7 +415,28 @@ extract_l4_flowkey_skb(struct sk_buff *skb, statkey *key) {
   case ETH_P_IPV6: {
     struct ipv6hdr *iphdr = (struct ipv6hdr *)(head + nh_off);
     ip_proto = BPF_CORE_READ(iphdr, nexthdr);
-    if (ip_proto != IPPROTO_TCP && ip_proto != IPPROTO_UDP) {
+    // Walk up to 2 extension headers so TCP behind them is still detected.
+    __u16 ext_skip = 0;
+#pragma unroll 2
+    for (int i = 0; i < 2; i++) {
+      if (likely(ip_proto != IPPROTO_HOPOPTS && ip_proto != IPPROTO_ROUTING &&
+                 ip_proto != IPPROTO_FRAGMENT && ip_proto != IPPROTO_DSTOPTS)) {
+        break;
+      }
+      __u8 pair[2];
+      if (bpf_probe_read_kernel(
+              pair, 2, head + nh_off + sizeof(*iphdr) + ext_skip) != 0) {
+        return 0;
+      }
+      if (ip_proto == IPPROTO_FRAGMENT) {
+        ip_proto = pair[0];
+        ext_skip += 8;
+      } else {
+        ip_proto = pair[0];
+        ext_skip += ((__u32)(pair[1] + 1) * 8);
+      }
+    }
+    if (ip_proto != IPPROTO_TCP) {
       return 0;
     }
     BPF_CORE_READ_INTO(&key->srcip, iphdr, saddr);
@@ -337,43 +447,35 @@ extract_l4_flowkey_skb(struct sk_buff *skb, statkey *key) {
     return 0;
   }
 
-  if (ip_proto == IPPROTO_TCP) {
-    struct tcphdr *tcp = (struct tcphdr *)(head + th_off);
-    key->src_port = bpf_ntohs(BPF_CORE_READ(tcp, source));
-    key->dst_port = bpf_ntohs(BPF_CORE_READ(tcp, dest));
-    __u8 doff = BPF_CORE_READ_BITFIELD_PROBED(tcp, doff);
-    if (unlikely(doff < 5)) {
-      return 0;
-    }
-    l4_hdr_len = (__u32)doff * 4;
-  } else {
-    struct udphdr *udp = (struct udphdr *)(head + th_off);
-    key->src_port = bpf_ntohs(BPF_CORE_READ(udp, source));
-    key->dst_port = bpf_ntohs(BPF_CORE_READ(udp, dest));
-    l4_hdr_len = (__u32)sizeof(*udp);
+  struct tcphdr *tcp = (struct tcphdr *)(head + th_off);
+  key->src_port = bpf_ntohs(BPF_CORE_READ(tcp, source));
+  key->dst_port = bpf_ntohs(BPF_CORE_READ(tcp, dest));
+  __u8 doff = BPF_CORE_READ_BITFIELD_PROBED(tcp, doff);
+  if (unlikely(doff < 5)) {
+    return 0;
   }
 
   key->proto = ip_proto;
-  return (__u32)th_off + l4_hdr_len;
+  return (__u32)th_off + (__u32)doff * 4;
 }
 
-// sniff_tcp_udp_skb performs the full L7 detect-and-cache cycle for a TCP
-// or UDP packet observed at one of the IP-layer kprobes (ip_local_out/
-// ip_rcv/ip6_local_out/ipv6_rcv). It does NOT touch pkt_count — counters
-// remain the responsibility of tcp_sendmsg/tcp_cleanup_rbuf for TCP and
-// the existing UDP hooks for UDP. Safe to call unconditionally; returns
-// immediately if the skb isn't TCP/UDP.
+// sniff_tcp_skb performs the L7 detect-and-cache cycle for TCP packets
+// observed at one of the IP-layer kprobes (ip_local_out/ip_rcv/
+// ip6_local_out/ipv6_rcv). UDP L7 detection is handled exclusively by the
+// dedicated ip_send_skb/skb_consume_udp hooks where the flowkey is
+// consistent with pkt_count. Safe to call unconditionally; returns
+// immediately for non-TCP or non-IP skbs.
 static inline __attribute__((always_inline)) void
-sniff_tcp_udp_skb(struct sk_buff *skb) {
+sniff_tcp_skb(struct sk_buff *skb) {
   statkey key;
   __builtin_memset(&key, 0, sizeof(key));
 
-  __u32 payload_off = extract_l4_flowkey_skb(skb, &key);
+  __u32 payload_off = extract_tcp_flowkey_skb(skb, &key);
   if (payload_off == 0) {
     return;
   }
 
-  detect_and_cache_l7_skb(skb, payload_off, key.proto, &key);
+  detect_and_cache_l7_skb(skb, payload_off, &key);
 }
 
 // ARP IPv4-over-Ethernet only. SPA→srcip, TPA→dstip, src_port=opcode.
@@ -878,7 +980,7 @@ static __attribute__((noinline)) size_t process_l4_skb(struct sk_buff *skb,
         ext_skip += 8;
       } else {
         ip_proto = pair[0];
-        ext_skip += ((__u16)(pair[1] + 1) * 8);
+        ext_skip += ((__u32)(pair[1] + 1) * 8);
       }
     }
 

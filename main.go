@@ -248,7 +248,7 @@ func main() {
 	} else {
 		signalCh := make(chan os.Signal, 1)
 
-		signal.Notify(signalCh, os.Interrupt, syscall.SIGTERM, syscall.SIGINT)
+		signal.Notify(signalCh, os.Interrupt, syscall.SIGTERM)
 		defer signal.Stop(signalCh)
 
 		go func() {
