@@ -112,6 +112,7 @@ func main() {
 		defer func() { _ = objsCgroupSkb.Close() }()
 
 		pktCount = objsCgroupSkb.PktCount
+		l7Map = objsCgroupSkb.FlowAppProto
 
 		cgroupSpec := loadAndPatchSpec("cgroup", loadCgroup, cgroupFsMagic)
 
@@ -151,6 +152,7 @@ func main() {
 		defer func() { _ = objsKprobe.Close() }()
 
 		pktCount = objsKprobe.PktCount
+		l7Map = objsKprobe.FlowAppProto
 
 		cgroupSpec := loadAndPatchSpec("cgroup", loadCgroup, cgroupFsMagic)
 
@@ -207,6 +209,7 @@ func main() {
 		defer func() { _ = objsXDP.Close() }()
 
 		pktCount = objsXDP.PktCount
+		l7Map = objsXDP.FlowAppProto
 
 		links = startXDP(objsXDP, iface, links)
 
@@ -227,6 +230,7 @@ func main() {
 		defer func() { _ = objsTC.Close() }()
 
 		pktCount = objsTC.PktCount
+		l7Map = objsTC.FlowAppProto
 
 		links = startTC(objsTC, iface, links)
 	}
@@ -336,7 +340,7 @@ func applyMaxEntries(spec *ebpf.CollectionSpec) {
 		return
 	}
 
-	for _, name := range [...]string{"pkt_count", "sock_info"} {
+	for _, name := range [...]string{"pkt_count", "sock_info", "flow_app_proto"} {
 		if m, ok := spec.Maps[name]; ok && m != nil {
 			m.MaxEntries = uint32(*maxEntries)
 		}
