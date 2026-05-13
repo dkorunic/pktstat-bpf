@@ -66,7 +66,7 @@ var sortFuncs = [...]func([]statEntry){
 	dstIPSort,   // 4
 }
 
-func drawTUI(pktCount *ebpf.Map, startTime time.Time) {
+func drawTUI(pktCount *ebpf.Map, l7 *ebpf.Map, startTime time.Time) {
 	app := tview.NewApplication()
 
 	var tableSortIdx atomic.Int32 // 0 = bitrateSort (default)
@@ -143,7 +143,7 @@ func drawTUI(pktCount *ebpf.Map, startTime time.Time) {
 	// Closed when app.Run() returns so the updater goroutine can exit.
 	done := make(chan struct{})
 
-	go updateStatsTable(app, statsTable, &tableSortIdx, pktCount, startTime, done)
+	go updateStatsTable(app, statsTable, &tableSortIdx, pktCount, l7, startTime, done)
 
 	_ = app.SetRoot(grid, true).
 		SetFocus(statsTable).
@@ -171,7 +171,7 @@ func drawTUI(pktCount *ebpf.Map, startTime time.Time) {
 // Columns: bitrate, packets, bytes, proto, src, dst, type/spi/inner/opcode,
 // code/flags/version, plus pid/comm/cgroup when --kprobes or --cgroup is set.
 func updateStatsTable(app *tview.Application, table *tview.Table, tableSortIdx *atomic.Int32,
-	pktCount *ebpf.Map, startTime time.Time, done <-chan struct{},
+	pktCount *ebpf.Map, l7 *ebpf.Map, startTime time.Time, done <-chan struct{},
 ) {
 	ticker := time.NewTicker(*refresh)
 	defer ticker.Stop()
@@ -217,7 +217,7 @@ func updateStatsTable(app *tview.Application, table *tview.Table, tableSortIdx *
 		slotMu[bufIdx].Lock()
 
 		// Read off the tview goroutine so it isn't blocked on the syscall.
-		snapshot, _ := processMap(pktCount, startTime, sortFuncs[tableSortIdx.Load()], statsBufs[bufIdx])
+		snapshot, _ := processMap(pktCount, l7, startTime, sortFuncs[tableSortIdx.Load()], statsBufs[bufIdx])
 		statsBufs[bufIdx] = snapshot
 
 		thisBuf := bufIdx

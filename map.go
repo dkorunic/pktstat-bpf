@@ -125,7 +125,7 @@ func checkBatchMapSupport(m *ebpf.Map) bool {
 // optimized listMapBatch or listMapIterate functions accordingly.
 //
 // listMap is safe to call concurrently.
-func listMap(m *ebpf.Map, start time.Time, buf []statEntry) ([]statEntry, error) {
+func listMap(m *ebpf.Map, l7 *ebpf.Map, start time.Time, buf []statEntry) ([]statEntry, error) {
 	checkBatchMapSupportOnce.Do(func() {
 		// Resolve before allocating per-CPU value buffers.
 		cpus, err := ebpf.PossibleCPU()
@@ -147,12 +147,14 @@ func listMap(m *ebpf.Map, start time.Time, buf []statEntry) ([]statEntry, error)
 		mapMaxEntries = m.MaxEntries()
 	})
 
+	appProtoByFlow := readFlowAppProto(l7)
+
 	if haveBatchMapSupport {
-		return listMapBatch(m, start, buf)
+		return listMapBatch(m, appProtoByFlow, start, buf)
 	}
 
 	// Iterator fallback; may abort on LRU per-CPU churn.
-	return listMapIterate(m, start, buf)
+	return listMapIterate(m, appProtoByFlow, start, buf)
 }
 
 // listMapBatch lists all the entries in the given ebpf.Map, converting the
@@ -163,7 +165,7 @@ func listMap(m *ebpf.Map, start time.Time, buf []statEntry) ([]statEntry, error)
 // The function is safe to call concurrently.
 //
 // listMapBatch is used by listMap when the map supports batch lookups.
-func listMapBatch(m *ebpf.Map, start time.Time, buf []statEntry) ([]statEntry, error) {
+func listMapBatch(m *ebpf.Map, appProtoByFlow map[tcFlowkey]uint8, start time.Time, buf []statEntry) ([]statEntry, error) {
 	batch := batchPool.Get().(*batchBuffers)
 	defer batchPool.Put(batch)
 
@@ -190,7 +192,7 @@ func listMapBatch(m *ebpf.Map, start time.Time, buf []statEntry) ([]statEntry, e
 
 		for i := range keys[:c] {
 			perCPU := values[i*possibleCPUs : (i+1)*possibleCPUs]
-			stats = addStats(stats, keys[i], sumPerCPUValue(perCPU), dur)
+			stats = addStats(stats, keys[i], sumPerCPUValue(perCPU), appProtoByFlow, dur)
 		}
 
 		if err != nil {
@@ -218,7 +220,7 @@ func listMapBatch(m *ebpf.Map, start time.Time, buf []statEntry) ([]statEntry, e
 // Returns:
 //   - []statEntry: a slice of statEntry objects containing the converted map entries
 //   - error: an error if any occurred during map iteration, otherwise nil
-func listMapIterate(m *ebpf.Map, start time.Time, buf []statEntry) ([]statEntry, error) {
+func listMapIterate(m *ebpf.Map, appProtoByFlow map[tcFlowkey]uint8, start time.Time, buf []statEntry) ([]statEntry, error) {
 	var key tcStatkey
 	// Per-CPU iterator wants a slice of length PossibleCPU.
 	val := make([]tcStatvalue, possibleCPUs)
@@ -238,7 +240,7 @@ func listMapIterate(m *ebpf.Map, start time.Time, buf []statEntry) ([]statEntry,
 	iter := m.Iterate()
 
 	for iter.Next(&key, &val) {
-		stats = addStats(stats, key, sumPerCPUValue(val), dur)
+		stats = addStats(stats, key, sumPerCPUValue(val), appProtoByFlow, dur)
 	}
 
 	return stats, iter.Err()
@@ -261,19 +263,20 @@ func listMapIterate(m *ebpf.Map, start time.Time, buf []statEntry) ([]statEntry,
 //
 // Returns:
 //   - []statEntry: the updated slice of statEntry objects
-func addStats(stats []statEntry, key tcStatkey, val tcStatvalue, dur float64) []statEntry {
+func addStats(stats []statEntry, key tcStatkey, val tcStatvalue, appProtoByFlow map[tcFlowkey]uint8, dur float64) []statEntry {
 	stats = append(stats, statEntry{
-		SrcIP:   bytesToAddr(key.Srcip.In6U.U6Addr8),
-		DstIP:   bytesToAddr(key.Dstip.In6U.U6Addr8),
-		Proto:   protoToString(key.Proto),
-		SrcPort: key.SrcPort,
-		DstPort: key.DstPort,
-		Bytes:   val.Bytes,
-		Packets: val.Packets,
-		Bitrate: 8 * float64(val.Bytes) / dur,
-		Pid:     key.Pid,
-		Comm:    internComm(key.Comm),
-		CGroup:  cGroupToPath(key.Cgroupid),
+		SrcIP:    bytesToAddr(key.Srcip.In6U.U6Addr8),
+		DstIP:    bytesToAddr(key.Dstip.In6U.U6Addr8),
+		Proto:    protoToString(key.Proto),
+		AppProto: appProtoToString(appProtoByFlow[statkeyToFlowkey(key)]),
+		SrcPort:  key.SrcPort,
+		DstPort:  key.DstPort,
+		Bytes:    val.Bytes,
+		Packets:  val.Packets,
+		Bitrate:  8 * float64(val.Bytes) / dur,
+		Pid:      key.Pid,
+		Comm:     internComm(key.Comm),
+		CGroup:   cGroupToPath(key.Cgroupid),
 	})
 
 	return stats

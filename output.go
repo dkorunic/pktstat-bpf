@@ -71,8 +71,8 @@ const (
 // Returns:
 //   - []statEntry: the sorted statEntry slice
 //   - error: an error if any occurred during map iteration, otherwise nil
-func processMap(m *ebpf.Map, start time.Time, sortFunc func([]statEntry), buf []statEntry) ([]statEntry, error) {
-	stats, err := listMap(m, start, buf)
+func processMap(m *ebpf.Map, l7 *ebpf.Map, start time.Time, sortFunc func([]statEntry), buf []statEntry) ([]statEntry, error) {
+	stats, err := listMap(m, l7, start, buf)
 	sortFunc(stats)
 
 	return stats, err

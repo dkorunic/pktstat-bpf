@@ -92,6 +92,7 @@ func main() {
 
 	// Set below from whichever mode-specific BPF object is loaded.
 	var pktCount *ebpf.Map
+	var l7Map *ebpf.Map
 
 	switch {
 	case *useCGroup != "":
@@ -237,7 +238,7 @@ func main() {
 
 	//nolint:nestif
 	if *enableTUI {
-		drawTUI(pktCount, startTime)
+		drawTUI(pktCount, l7Map, startTime)
 	} else {
 		signalCh := make(chan os.Signal, 1)
 
@@ -262,7 +263,7 @@ func main() {
 
 		<-c1.Done()
 
-		m, err := processMap(pktCount, startTime, bitrateSort, nil)
+		m, err := processMap(pktCount, l7Map, startTime, bitrateSort, nil)
 		if err != nil {
 			// LRU per-CPU iteration can abort under churn.
 			if errors.Is(err, ebpf.ErrIterationAborted) {
