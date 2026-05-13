@@ -1,23 +1,7 @@
 // @license
 // Copyright (C) 2025  Dinko Korunic
 //
-// Permission is hereby granted, free of charge, to any person obtaining a copy
-// of this software and associated documentation files (the "Software"), to deal
-// in the Software without restriction, including without limitation the rights
-// to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
-// copies of the Software, and to permit persons to whom the Software is
-// furnished to do so, subject to the following conditions:
-//
-// The above copyright notice and this permission notice shall be included in all
-// copies or substantial portions of the Software.
-//
-// THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
-// IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
-// FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
-// AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
-// LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
-// OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
-// SOFTWARE.
+// SPDX-License-Identifier: MIT
 
 package main
 
@@ -294,20 +278,14 @@ func addStats(stats []statEntry, key tcStatkey, val tcStatvalue, appProtoByFlow 
 	fk := statkeyToFlowkey(key)
 	proto, found := appProtoByFlow[fk]
 
-	// In KProbes mode, L7 detection may fire on either the send kprobe
-	// (ip_local_out: src=local, dst=remote) or the receive kprobe (ip_rcv:
-	// src=remote, dst=local). If the pkt_count row was written by the opposite
-	// kprobe, its key is the reverse of the cached flow_app_proto key. Try the
-	// reverse when the primary lookup misses. This covers both regular TCP
-	// (proto=6) and retransmit rows (proto=253, remapped to 6 by
-	// statkeyToFlowkey before the lookup above).
+	// L7 may be cached on the opposite kprobe direction; try reverse on TCP miss.
 	if !found && (key.Proto == protoTCPNum || key.Proto == protoTCPRetx) {
 		rev := tcFlowkey{
 			Srcip:   fk.Dstip,
 			Dstip:   fk.Srcip,
 			SrcPort: fk.DstPort,
 			DstPort: fk.SrcPort,
-			Proto:   fk.Proto, // already IPPROTO_TCP (6): statkeyToFlowkey remapped 253→6
+			Proto:   fk.Proto,
 		}
 		proto = appProtoByFlow[rev]
 	}
@@ -398,9 +376,7 @@ func readFlowAppProtoIter(m *ebpf.Map, out map[tcFlowkey]uint8) {
 		out[k] = v
 	}
 
-	// Iteration aborted under churn is non-fatal — worst case is a few rows
-	// missing AppProto until the next refresh. Log other errors so kernel
-	// or programming faults don't disappear silently.
+	// Iteration aborts are non-fatal; surface other errors for visibility.
 	err := iter.Err()
 	if err != nil && !errors.Is(err, ebpf.ErrIterationAborted) {
 		log.Printf("flow_app_proto map: unexpected iteration error: %v", err)

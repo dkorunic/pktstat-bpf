@@ -69,21 +69,19 @@ func sniffAppProtoGo(peek []byte, l4proto uint8) uint8 { //nolint:gocyclo
 			return appProtoSSH
 		}
 
-		// TLS record header: ContentType ∈ {0x14..0x17}, ProtocolVersion
-		// major=0x03, minor ∈ {0x00..0x04}. Catches handshake and mid-stream.
+		// TLS record: type ∈ {0x14..0x17}, major=0x03, minor ∈ {0x00..0x04}.
 		if (peek[0] == 0x14 || peek[0] == 0x15 || peek[0] == 0x16 || peek[0] == 0x17) &&
 			peek[1] == 0x03 && peek[2] <= 0x04 {
 			return appProtoTLS
 		}
 
-		// RDP: TPKT v3 header (0x03 0x00) + COTP CR (0xE0) or CC (0xD0) at byte 5.
+		// RDP: TPKT v3 (03 00) + COTP CR/CC (E0/D0) at byte 5; only initial handshake.
 		if peek[0] == 0x03 && peek[1] == 0x00 && len(peek) >= 6 &&
 			(peek[5] == 0xE0 || peek[5] == 0xD0) {
 			return appProtoRDP
 		}
 
-		// Memcached binary: magic 0x80/0x81, opcode ≤ 0x26, data_type
-		// field (byte 5) = 0x00 in all current implementations.
+		// Memcached binary: magic 0x80/0x81, opcode <= 0x26 (std+SASL), data_type=0.
 		if len(peek) >= 6 && (peek[0] == 0x80 || peek[0] == 0x81) &&
 			peek[1] <= 0x26 && peek[5] == 0x00 {
 			return appProtoMemcached
@@ -92,17 +90,13 @@ func sniffAppProtoGo(peek []byte, l4proto uint8) uint8 { //nolint:gocyclo
 		if len(peek) >= 8 {
 			w2 := uint32(peek[4])<<24 | uint32(peek[5])<<16 | uint32(peek[6])<<8 | uint32(peek[7])
 
-			// PostgreSQL StartupMessage: bytes[4:8] = protocol version 3.0,
-			// SSL request, or GSS encryption request magic.
-			// For version 3.0, also validate bytes[0:4] (message length) is in
-			// [8, 16 MiB) to reduce false positives; SSL/GSS magic is distinctive.
+			// PostgreSQL: bytes[4:8] = v3.0 magic + len in [8, 16MiB), or SSL/GSS magic.
 			if (w2 == 0x00030000 && w > 7 && w < 0x01000000) ||
 				w2 == 0x04D2162F || w2 == 0x04D2162E {
 				return appProtoPostgres
 			}
 
-			// MQTT CONNECT: fixed header 0x10, 1-byte remaining-length < 128,
-			// protocol-name length 4 ("MQTT") or 6 ("MQIsdp", protocol level 0x03).
+			// MQTT CONNECT: 0x10 + rem-len<128 + name "MQTT" (v3.1.1/5.0) or "MQIsdp" (v3.1).
 			if peek[0] == 0x10 && (peek[1]&0x80) == 0 && peek[2] == 0x00 &&
 				b4 == 'M' && peek[5] == 'Q' &&
 				((peek[3] == 0x04 && peek[6] == 'T' && peek[7] == 'T') ||
@@ -113,16 +107,14 @@ func sniffAppProtoGo(peek []byte, l4proto uint8) uint8 { //nolint:gocyclo
 	}
 
 	if l4proto == ipprotoUDP {
-		// DTLS: same content types as TLS, major=0xFE, minor=0xFF (1.0) or 0xFD (1.2).
+		// DTLS record: TLS content types, major=0xFE, minor=0xFF (1.0) or 0xFD (1.2).
 		if (peek[0] == 0x14 || peek[0] == 0x15 || peek[0] == 0x16 || peek[0] == 0x17) &&
 			peek[1] == 0xFE && (peek[2] == 0xFF || peek[2] == 0xFD) {
 			return appProtoTLS
 		}
 
-		// QUIC long header form + RFC 9000 fixed bit + known version.
-		// v=1: QUICv1 (RFC 9000). v=0x6B3343CF: QUICv2 (RFC 9369).
-		// v=0: version-negotiation sentinel (RFC 9000 §6); included so VN
-		// packets are attributed to QUIC rather than UNKNOWN.
+		// QUIC long header (bit 7) + RFC 9000 fixed bit (bit 6).
+		// v=1 QUICv1, 0x6B3343CF QUICv2, 0 = version-negotiation sentinel.
 		if peek[0]&0xC0 == 0xC0 {
 			v := uint32(peek[1])<<24 | uint32(peek[2])<<16 |
 				uint32(peek[3])<<8 | uint32(peek[4])
@@ -132,8 +124,7 @@ func sniffAppProtoGo(peek []byte, l4proto uint8) uint8 { //nolint:gocyclo
 			}
 		}
 
-		// WireGuard: little-endian message type, reserved bytes 1-3 = 0.
-		// Types: 1=Handshake Init, 2=Response, 3=Cookie Reply.
+		// WireGuard: LE type 1/2/3 (handshake/response/cookie); type 4 excluded.
 		if w == 0x01000000 || w == 0x02000000 || w == 0x03000000 {
 			return appProtoWireGuard
 		}

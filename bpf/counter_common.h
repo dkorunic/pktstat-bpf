@@ -1,23 +1,7 @@
 // @license
 // Copyright (C) 2024  Dinko Korunic
 //
-// Permission is hereby granted, free of charge, to any person obtaining a copy
-// of this software and associated documentation files (the "Software"), to deal
-// in the Software without restriction, including without limitation the rights
-// to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
-// copies of the Software, and to permit persons to whom the Software is
-// furnished to do so, subject to the following conditions:
-//
-// The above copyright notice and this permission notice shall be included in
-// all copies or substantial portions of the Software.
-//
-// THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
-// IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
-// FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
-// AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
-// LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
-// OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
-// SOFTWARE.
+// SPDX-License-Identifier: MIT
 
 //go:build ignore
 
@@ -212,17 +196,13 @@ sniff_app_proto(const __u8 *buf, __u32 peek_len, __u8 l4_proto) {
       return APP_PROTO_TLS;
     }
 
-    // RDP: TPKT v3 header (0x03 0x00) + COTP Connection Request (0xE0) or
-    // Confirm (0xD0) PDU type at byte 5. Only the initial plaintext
-    // handshake is detectable; post-negotiation traffic appears as TLS.
+    // RDP: TPKT v3 (03 00) + COTP CR/CC (E0/D0) at byte 5; only initial handshake.
     if (buf[0] == 0x03 && buf[1] == 0x00 && peek_len >= 6 &&
         (buf[5] == 0xE0 || buf[5] == 0xD0)) {
       return APP_PROTO_RDP;
     }
 
-    // Memcached binary: magic 0x80 (request) or 0x81 (response), opcode
-    // byte in the defined range [0x00, 0x26] (std + SASL), data_type
-    // field (byte 5) = 0x00 in all current implementations.
+    // Memcached binary: magic 0x80/0x81, opcode <= 0x26 (std+SASL), data_type=0.
     if (peek_len >= 6 && (buf[0] == 0x80 || buf[0] == 0x81) &&
         buf[1] <= 0x26 && buf[5] == 0x00) {
       return APP_PROTO_MEMCACHED;
@@ -232,21 +212,13 @@ sniff_app_proto(const __u8 *buf, __u32 peek_len, __u8 l4_proto) {
       __u32 w2 = ((__u32)buf[4] << 24) | ((__u32)buf[5] << 16) |
                  ((__u32)buf[6] << 8) | (__u32)buf[7];
 
-      // PostgreSQL StartupMessage: bytes[4:8] = protocol version 3.0
-      // (0x00030000), SSL request (0x04D2162F), or GSS request (0x04D2162E).
-      // Bytes[0:4] hold the total message length (small big-endian int,
-      // minimum 8). For version 3.0 we also validate the length field is in
-      // [8, 16 MiB) — a common bit pattern at bytes 4-7 would otherwise
-      // match. SSL/GSS magic values are distinctive enough to stand alone.
+      // PostgreSQL: bytes[4:8] = v3.0 magic + len in [8, 16MiB), or SSL/GSS magic.
       if ((w2 == 0x00030000 && w > 7 && w < 0x01000000) ||
           w2 == 0x04D2162F || w2 == 0x04D2162E) {
         return APP_PROTO_POSTGRES;
       }
 
-      // MQTT CONNECT: fixed header 0x10, 1-byte remaining-length < 128
-      // (bit 7 = 0), 2-byte protocol-name length, then "MQTT" (v3.1.1/5.0,
-      // length = 4) or "MQIsdp" (v3.1, length = 6, protocol level 0x03 at
-      // byte 10).
+      // MQTT CONNECT: 0x10 + rem-len<128 + name "MQTT" (v3.1.1/5.0) or "MQIsdp" (v3.1).
       if (buf[0] == 0x10 && (buf[1] & 0x80) == 0 && buf[2] == 0x00 &&
           b4 == 'M' && buf[5] == 'Q' &&
           ((buf[3] == 0x04 && buf[6] == 'T' && buf[7] == 'T') ||
@@ -257,8 +229,7 @@ sniff_app_proto(const __u8 *buf, __u32 peek_len, __u8 l4_proto) {
   }
 
   if (l4_proto == IPPROTO_UDP) {
-    // DTLS record: same content types as TLS, major=0xFE, minor=0xFF (1.0)
-    // or 0xFD (1.2).
+    // DTLS record: TLS content types, major=0xFE, minor=0xFF (1.0) or 0xFD (1.2).
     if ((buf[0] == 0x14 || buf[0] == 0x15 || buf[0] == 0x16 ||
          buf[0] == 0x17) &&
         buf[1] == 0xFE && (buf[2] == 0xFF || buf[2] == 0xFD)) {
@@ -269,19 +240,13 @@ sniff_app_proto(const __u8 *buf, __u32 peek_len, __u8 l4_proto) {
     if ((buf[0] & 0xC0) == 0xC0) {
       __u32 v = ((__u32)buf[1] << 24) | ((__u32)buf[2] << 16) |
                 ((__u32)buf[3] << 8) | (__u32)buf[4];
-      // v=1: QUICv1 (RFC 9000). v=0x6B3343CF: QUICv2 (RFC 9369).
-      // v=0: version-negotiation sentinel (RFC 9000 §6); intentionally
-      // included so VN packets are attributed to QUIC rather than UNKNOWN.
+      // v=1 QUICv1, 0x6B3343CF QUICv2, 0 = version-negotiation sentinel.
       if (v == 0x00000001 || v == 0x6B3343CF || v == 0x00000000) {
         return APP_PROTO_QUIC;
       }
     }
 
-    // WireGuard: 4-byte little-endian message type with reserved bytes 1-3
-    // always zero. Detects Handshake Init (1), Response (2), and Cookie
-    // Reply (3). Type 4 (transport data) is excluded to limit false
-    // positives; once a flow is cached from a handshake packet the data
-    // packets inherit the label without re-sniffing.
+    // WireGuard: LE type 1/2/3 (handshake/response/cookie); type 4 excluded.
     if (w == 0x01000000 || w == 0x02000000 || w == 0x03000000) {
       return APP_PROTO_WIREGUARD;
     }
@@ -329,9 +294,7 @@ detect_and_cache_l7(void *transport, void *data_end,
   __builtin_memcpy(buf, payload, L7_PEEK_LEN);
 
   __u8 app = sniff_app_proto(buf, L7_PEEK_LEN, l4_proto);
-  // Cache even APP_PROTO_UNKNOWN to prevent re-sniffing every packet on
-  // unrecognised flows. BPF_NOEXIST is safe under races: all concurrent
-  // writers produce the same value, so losing the race is harmless.
+  // Cache UNKNOWN to skip re-sniffing; BPF_NOEXIST safe (all writers agree).
   bpf_map_update_elem(&flow_app_proto, &fk, &app, BPF_NOEXIST);
 }
 
@@ -364,10 +327,7 @@ detect_and_cache_l7_skb(struct sk_buff *skb, __u32 payload_off,
   }
 
   unsigned char *head = (unsigned char *)BPF_CORE_READ(skb, head);
-  // tail is an offset from head on all supported architectures
-  // (NET_SKBUFF_DATA_USES_OFFSET is set on amd64 / arm64). Bail early for
-  // packets whose linear data ends before L7_PEEK_LEN payload bytes — avoids
-  // reading garbage from the kernel allocator (e.g., TCP SYN frames).
+  // Bail if linear data ends before peek length (avoids allocator garbage).
   __u32 tail = (__u32)BPF_CORE_READ(skb, tail);
   if (payload_off + L7_PEEK_LEN > tail) {
     return;
@@ -392,8 +352,7 @@ static __attribute__((noinline)) __u32
 extract_tcp_flowkey_skb(struct sk_buff *skb, statkey *key) {
   unsigned char *head = (unsigned char *)BPF_CORE_READ(skb, head);
   __u16 nh_off = BPF_CORE_READ(skb, network_header);
-  // transport_header is set by the IP stack before ip_local_out / ip_rcv are
-  // called; it is valid for TCP skbs that pass the protocol check below.
+  // transport_header valid here: IP stack sets it before ip_local_out / ip_rcv.
   __u16 th_off = BPF_CORE_READ(skb, transport_header);
   __u16 proto_be = BPF_CORE_READ(skb, protocol);
 
