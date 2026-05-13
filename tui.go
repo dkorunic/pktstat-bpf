@@ -181,18 +181,19 @@ func updateStatsTable(app *tview.Application, table *tview.Table, tableSortIdx *
 		"packets", // column 1
 		"bytes",   // column 2
 		"proto",   // column 3
-		"src",     // column 4
-		"dst",     // column 5
-		"type",    // column 6
-		"code",    // column 7
-		"pid",     // column 8, only kprobes and cgroup
-		"comm",    // column 9, only kprobes and cgroup
-		"cgroup",  // column 10, only kprobes and cgroup
+		"l7",      // column 4
+		"src",     // column 5
+		"dst",     // column 6
+		"type",    // column 7
+		"code",    // column 8
+		"pid",     // column 9, only kprobes and cgroup
+		"comm",    // column 10, only kprobes and cgroup
+		"cgroup",  // column 11, only kprobes and cgroup
 	}
 
 	// Drop pid/comm/cgroup columns when not in --kprobes / --cgroup mode.
 	if !*useKProbes && *useCGroup == "" {
-		headers = headers[:8]
+		headers = headers[:9]
 	}
 
 	// Hoisted: flags are immutable after startup.
@@ -276,63 +277,64 @@ func updateStatsTable(app *tview.Application, table *tview.Table, tableSortIdx *
 				row[1].Text = strconv.FormatUint(v.Packets, 10)
 				row[2].Text = strconv.FormatUint(v.Bytes, 10)
 				row[3].Text = v.Proto
+				row[4].Text = v.AppProto
 
 				switch v.Proto {
 				case protoICMPv4, protoICMPv6:
 					addrBuf = v.SrcIP.AppendTo(addrBuf[:0])
-					row[4].Text = string(addrBuf)
-					addrBuf = v.DstIP.AppendTo(addrBuf[:0])
 					row[5].Text = string(addrBuf)
-					row[6].Text = strconv.Itoa(int(v.SrcPort))
-					row[7].Text = strconv.Itoa(int(v.DstPort))
+					addrBuf = v.DstIP.AppendTo(addrBuf[:0])
+					row[6].Text = string(addrBuf)
+					row[7].Text = strconv.Itoa(int(v.SrcPort))
+					row[8].Text = strconv.Itoa(int(v.DstPort))
 				case protoESP, protoAH:
 					addrBuf = v.SrcIP.AppendTo(addrBuf[:0])
-					row[4].Text = string(addrBuf)
-					addrBuf = v.DstIP.AppendTo(addrBuf[:0])
 					row[5].Text = string(addrBuf)
+					addrBuf = v.DstIP.AppendTo(addrBuf[:0])
+					row[6].Text = string(addrBuf)
 					spi := uint32(v.SrcPort)<<16 | uint32(v.DstPort)
 					addrBuf = append(addrBuf[:0], '0', 'x')
 					addrBuf = strconv.AppendUint(addrBuf, uint64(spi), 16)
-					row[6].Text = string(addrBuf)
-					row[7].Text = ""
+					row[7].Text = string(addrBuf)
+					row[8].Text = ""
 				case protoGRE:
 					addrBuf = v.SrcIP.AppendTo(addrBuf[:0])
-					row[4].Text = string(addrBuf)
-					addrBuf = v.DstIP.AppendTo(addrBuf[:0])
 					row[5].Text = string(addrBuf)
-					row[6].Text = greInnerName(v.SrcPort)
+					addrBuf = v.DstIP.AppendTo(addrBuf[:0])
+					row[6].Text = string(addrBuf)
+					row[7].Text = greInnerName(v.SrcPort)
 					addrBuf = append(addrBuf[:0], '0', 'x')
 					addrBuf = appendHex16(addrBuf, v.DstPort)
-					row[7].Text = string(addrBuf)
+					row[8].Text = string(addrBuf)
 				case protoOSPF:
 					addrBuf = v.SrcIP.AppendTo(addrBuf[:0])
-					row[4].Text = string(addrBuf)
-					addrBuf = v.DstIP.AppendTo(addrBuf[:0])
 					row[5].Text = string(addrBuf)
-					row[6].Text = ospfTypeName(v.SrcPort)
+					addrBuf = v.DstIP.AppendTo(addrBuf[:0])
+					row[6].Text = string(addrBuf)
+					row[7].Text = ospfTypeName(v.SrcPort)
 					addrBuf = append(addrBuf[:0], 'v')
 					addrBuf = strconv.AppendUint(addrBuf, uint64(v.DstPort), 10)
-					row[7].Text = string(addrBuf)
+					row[8].Text = string(addrBuf)
 				case protoARP:
 					addrBuf = v.SrcIP.AppendTo(addrBuf[:0])
-					row[4].Text = string(addrBuf)
-					addrBuf = v.DstIP.AppendTo(addrBuf[:0])
 					row[5].Text = string(addrBuf)
-					row[6].Text = arpOpName(v.SrcPort)
-					row[7].Text = ""
+					addrBuf = v.DstIP.AppendTo(addrBuf[:0])
+					row[6].Text = string(addrBuf)
+					row[7].Text = arpOpName(v.SrcPort)
+					row[8].Text = ""
 				default:
 					addrBuf = v.SrcIP.AppendTo(addrBuf[:0])
 					addrBuf = append(addrBuf, ':')
 					addrBuf = strconv.AppendUint(addrBuf, uint64(v.SrcPort), 10)
-					row[4].Text = string(addrBuf)
+					row[5].Text = string(addrBuf)
 
 					addrBuf = v.DstIP.AppendTo(addrBuf[:0])
 					addrBuf = append(addrBuf, ':')
 					addrBuf = strconv.AppendUint(addrBuf, uint64(v.DstPort), 10)
-					row[5].Text = string(addrBuf)
+					row[6].Text = string(addrBuf)
 
-					row[6].Text = ""
 					row[7].Text = ""
+					row[8].Text = ""
 				}
 
 				if showProcInfo {
@@ -341,9 +343,9 @@ func updateStatsTable(app *tview.Application, table *tview.Table, tableSortIdx *
 						pidStr = strconv.FormatInt(int64(v.Pid), 10)
 					}
 
-					row[8].Text = pidStr
-					row[9].Text = v.Comm
-					row[10].Text = v.CGroup
+					row[9].Text = pidStr
+					row[10].Text = v.Comm
+					row[11].Text = v.CGroup
 				}
 			}
 
