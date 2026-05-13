@@ -192,6 +192,11 @@ func outputPlain(m []statEntry, showProcessInfo bool) string {
 		sb.WriteString(", proto: ")
 		sb.WriteString(v.Proto)
 
+		if v.AppProto != "" {
+			sb.WriteString(", l7: ")
+			sb.WriteString(v.AppProto)
+		}
+
 		switch v.Proto {
 		case protoICMPv4, protoICMPv6:
 			sb.WriteString(", src: ")

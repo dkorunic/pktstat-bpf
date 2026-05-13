@@ -203,6 +203,70 @@ func TestStatEntryJSON_GRE(t *testing.T) {
 	}
 }
 
+func TestOutputPlainAppProto(t *testing.T) {
+	t.Parallel()
+
+	e := mkEntry("TCP", 12345, 443)
+	e.AppProto = "TLS"
+
+	out := outputPlain([]statEntry{e}, false)
+
+	for _, want := range []string{
+		"proto: TCP",
+		"l7: TLS",
+		"src: 10.0.0.1:12345",
+		"dst: 10.0.0.2:443",
+	} {
+		if !strings.Contains(out, want) {
+			t.Errorf("missing %q in:\n%s", want, out)
+		}
+	}
+}
+
+func TestOutputPlainAppProtoEmptyOmitted(t *testing.T) {
+	t.Parallel()
+
+	e := mkEntry("TCP", 12345, 80)
+	out := outputPlain([]statEntry{e}, false)
+
+	if strings.Contains(out, "l7:") {
+		t.Errorf("unexpected l7 field for unknown app proto:\n%s", out)
+	}
+}
+
+func TestStatEntryJSON_AppProto(t *testing.T) {
+	t.Parallel()
+
+	e := mkEntry("UDP", 51200, 443)
+	e.AppProto = "QUIC"
+
+	b, err := json.Marshal(&e)
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	s := string(b)
+
+	if !strings.Contains(s, `"appProto":"QUIC"`) {
+		t.Errorf("missing appProto in JSON:\n%s", s)
+	}
+}
+
+func TestStatEntryJSON_AppProtoOmittedWhenEmpty(t *testing.T) {
+	t.Parallel()
+
+	e := mkEntry("TCP", 12345, 80)
+
+	b, err := json.Marshal(&e)
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	s := string(b)
+
+	if strings.Contains(s, `"appProto"`) {
+		t.Errorf("unexpected appProto field in TCP JSON:\n%s", s)
+	}
+}
+
 func TestStatEntryJSON_TCPBackwardsCompat(t *testing.T) {
 	t.Parallel()
 
