@@ -91,8 +91,10 @@ func main() {
 	}
 
 	// Set below from whichever mode-specific BPF object is loaded.
-	var pktCount *ebpf.Map
-	var l7Map *ebpf.Map
+	var (
+		pktCount *ebpf.Map
+		l7Map    *ebpf.Map
+	)
 
 	switch {
 	case *useCGroup != "":

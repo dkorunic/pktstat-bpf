@@ -290,10 +290,12 @@ func readFlowAppProto(m *ebpf.Map) map[tcFlowkey]uint8 {
 		return nil
 	}
 
-	out := make(map[tcFlowkey]uint8, m.MaxEntries()/8)
+	out := make(map[tcFlowkey]uint8)
 
-	var k tcFlowkey
-	var v uint8
+	var (
+		k tcFlowkey
+		v uint8
+	)
 
 	iter := m.Iterate()
 	for iter.Next(&k, &v) {

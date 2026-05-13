@@ -27,7 +27,7 @@ func sniffAppProtoGo(peek []byte, l4proto uint8) uint8 {
 	w := uint32(peek[0])<<24 | uint32(peek[1])<<16 | uint32(peek[2])<<8 | uint32(peek[3])
 	b4 := peek[4]
 
-	if l4proto == ipprotoTCP {
+	if l4proto == ipprotoTCP { //nolint:nestif
 		// HTTP method / response / h2c preface. 5-byte disambiguation reduces
 		// false positives compared with a bare 4-byte prefix.
 		switch w {
