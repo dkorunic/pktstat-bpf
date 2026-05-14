@@ -83,6 +83,10 @@ tasks:
       - task: fmt
       - nilaway ./...
 
+  test:
+    cmds:
+      - go test ./...
+
   tools:
     cmds:
       - task: gofumpt
