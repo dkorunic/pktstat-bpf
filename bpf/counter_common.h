@@ -34,9 +34,7 @@ struct {
   __type(value, statvalue);
 } pkt_count SEC(".maps");
 
-// Process-agnostic 5-tuple key for the flow_app_proto cache. PID/cgroup are
-// intentionally absent — L7 protocol is a property of the flow, not the
-// process. Trailing pad is explicit so layout is stable across compilers.
+// 5-tuple flow key (no PID/cgroup — flow-scoped). Explicit pad keeps layout stable.
 typedef struct flowkey_t {
   struct in6_addr srcip;
   struct in6_addr dstip;
@@ -46,10 +44,7 @@ typedef struct flowkey_t {
   __u8  _pad[3];
 } flowkey;
 
-// flow_app_proto caches the detected L7 app-proto per 5-tuple. NOT per-CPU:
-// detection is rare-write/heavy-read and we want one canonical answer per
-// flow visible to every CPU. Sized via the same MAX_ENTRIES knob as
-// pkt_count (applyMaxEntries patches both at load time).
+// L7 app-proto cache per 5-tuple. Non-per-CPU: one canonical answer per flow.
 struct {
   __uint(type, BPF_MAP_TYPE_LRU_HASH);
   __uint(max_entries, MAX_ENTRIES);

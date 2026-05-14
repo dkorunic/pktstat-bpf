@@ -37,12 +37,10 @@ const (
 var (
 	cGroupCache     = make(map[uint64]string)
 	cGroupCacheLock sync.RWMutex
-	cGroupRebuildMu sync.Mutex // serialises filesystem walks to avoid thundering herd
+	cGroupRebuildMu sync.Mutex // serialises FS walks
 	cGroupInitOnce  sync.Once
 
-	// Unix-nano timestamp of the most recently completed cgroupCacheRefresh.
-	// Bursts of LostSamples events (and the miss-path walk in cGroupToPath)
-	// coalesce against this to avoid thrashing the FS walk on busy systems.
+	// lastCgroupRefreshNano coalesces bursty refresh callers against the last walk.
 	lastCgroupRefreshNano atomic.Int64
 )
 

@@ -61,11 +61,7 @@ func TestCGroupWalk(t *testing.T) {
 
 	root := t.TempDir()
 
-	// Build a small directory tree:
-	//   <root>/
-	//     a/
-	//     b/c/
-	//     file.txt   (ignored: not a directory)
+	// Tree: a/, b/c/, plus file.txt (must be skipped).
 	for _, sub := range []string{"a", "b/c"} {
 		if err := os.MkdirAll(filepath.Join(root, sub), 0o755); err != nil {
 			t.Fatalf("mkdir %s: %v", sub, err)

@@ -16,13 +16,9 @@ import (
 
 const (
 	batchSize   = 4096
-	minDuration = 1e-9 // 1 nanosecond floor to avoid division by zero in bitrate
+	minDuration = 1e-9 // bitrate divide-by-zero floor
 
-	// Initial cap for the statEntry result slice when the caller didn't pass a
-	// reuse buffer. mapMaxEntries can be 131072+ (or whatever --max-entries
-	// sets), which on a low-traffic system would mean a ~16 MB allocation per
-	// call holding mostly nothing. 4096 covers most steady-state workloads;
-	// append-grow handles the long tail.
+	// initialStatsHint caps the no-buf allocation so low-traffic systems don't reserve ~16 MB.
 	initialStatsHint = 4096
 )
 
@@ -45,21 +41,10 @@ var (
 	batchPool   sync.Pool
 	l7BatchPool sync.Pool
 
-	// flowAppProtoReuse holds the previous readFlowAppProto map for reuse.
-	// readFlowAppProto clears and refills it on each call instead of
-	// allocating fresh, eliminating per-tick GC pressure at high flow counts.
-	// Safe without a mutex: processMap is serialized (slotMu in TUI mode,
-	// single call in CLI mode) so at most one call is in flight at a time.
+	// flowAppProtoReuse is reused across readFlowAppProto calls; processMap serializes access.
 	flowAppProtoReuse map[tcFlowkey]uint8
 
-	// commIntern dedupes comm strings across all statEntry rows. Process names
-	// repeat heavily (a few dozen distinct values across 100k+ entries), so
-	// interning by the raw [16]int8 array means we only do the unsafe.Slice +
-	// trim + string allocation once per *distinct* comm rather than per entry.
-	// The map is never pruned; in container-heavy environments with high process
-	// churn it grows proportionally to the number of distinct comm values seen
-	// over the lifetime of the process (bounded in practice to ~TASK_COMM_LEN
-	// unique 15-char names).
+	// commIntern dedupes comm strings; never pruned, bounded by distinct names seen.
 	commIntern   = make(map[[16]int8]string)
 	commInternMu sync.Mutex
 )
@@ -197,7 +182,6 @@ func listMapBatch(m *ebpf.Map, appProtoByFlow map[tcFlowkey]uint8, start time.Ti
 
 	var cursor ebpf.MapBatchCursor
 
-	// values is flat: per-CPU vector for keys[i] at [i*possibleCPUs : (i+1)*possibleCPUs].
 	for {
 		c, err := m.BatchLookup(&cursor, keys, values, nil)
 
@@ -383,9 +367,7 @@ func readFlowAppProtoIter(m *ebpf.Map, out map[tcFlowkey]uint8) {
 	}
 }
 
-// protoTCPRetx is the synthetic protocol number BPF assigns to TCP
-// retransmit rows (PROTO_TCP_RETX in bpf/counter.h). protoTCPNum is the
-// standard IPPROTO_TCP value those flows share in flow_app_proto.
+// protoTCPRetx is the synthetic BPF retx proto; retx rows share IPPROTO_TCP in flow_app_proto.
 const (
 	protoTCPRetx uint8 = 253
 	protoTCPNum  uint8 = 6

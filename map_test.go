@@ -234,8 +234,7 @@ func TestAddStatsPrimaryLookup(t *testing.T) {
 func TestAddStatsReverseDirectionTCP(t *testing.T) {
 	t.Parallel()
 
-	// Row was counted on receive path (key dir: remote→local),
-	// L7 was cached on send path (cache dir: local→remote).
+	// Receive-direction key, but L7 cached under send-direction.
 	local := netip.MustParseAddr("10.0.0.1")
 	remote := netip.MustParseAddr("8.8.8.8")
 
@@ -256,8 +255,7 @@ func TestAddStatsReverseDirectionTCP(t *testing.T) {
 func TestAddStatsReverseDirectionTCPRetransmit(t *testing.T) {
 	t.Parallel()
 
-	// TCP retransmit rows arrive with proto=253. Reverse-direction lookup
-	// must remap to 6 before checking the cache.
+	// Retransmit (proto=253) must remap to TCP (6) before reverse lookup.
 	local := netip.MustParseAddr("10.0.0.1")
 	remote := netip.MustParseAddr("8.8.8.8")
 

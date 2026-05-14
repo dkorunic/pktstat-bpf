@@ -56,8 +56,7 @@
 #define GRE_FLAG_KEY 0x2000
 #define GRE_FLAG_SEQUENCE 0x1000
 
-// L7 app-proto identifiers stored as values in flow_app_proto. Mirror in
-// helpers.go (appProto*). Keep these in lockstep with the Go side.
+// L7 app-proto IDs; mirror appProto* in helpers.go.
 #define APP_PROTO_UNKNOWN   0
 #define APP_PROTO_HTTP      1
 #define APP_PROTO_TLS       2
@@ -69,10 +68,7 @@
 #define APP_PROTO_WIREGUARD 8
 #define APP_PROTO_MEMCACHED 9
 
-// Bytes peeked from the L4 payload for L7 signature matching. 12 is the
-// minimum that covers QUIC (1 form byte + 4 version bytes + slack) and gives
-// HTTP/TLS the 5-byte disambiguation window described in
-// docs/superpowers/specs/2026-05-12-l7-protocol-detection-design.md.
+// L4 payload peek size; 12 covers QUIC version + HTTP/TLS 5-byte disambig.
 #define L7_PEEK_LEN 12
 
 #define likely(x) __builtin_expect(!!(x), 1)

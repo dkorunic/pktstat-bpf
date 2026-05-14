@@ -160,19 +160,20 @@ func updateStatsTable(app *tview.Application, table *tview.Table, tableSortIdx *
 	ticker := time.NewTicker(*refresh)
 	defer ticker.Stop()
 
+	// Last three columns only emitted under --kprobes / --cgroup.
 	headers := []string{
-		"bitrate", // column 0
-		"packets", // column 1
-		"bytes",   // column 2
-		"proto",   // column 3
-		"l7",      // column 4
-		"src",     // column 5
-		"dst",     // column 6
-		"type",    // column 7
-		"code",    // column 8
-		"pid",     // column 9, only kprobes and cgroup
-		"comm",    // column 10, only kprobes and cgroup
-		"cgroup",  // column 11, only kprobes and cgroup
+		"bitrate",
+		"packets",
+		"bytes",
+		"proto",
+		"l7",
+		"src",
+		"dst",
+		"type",
+		"code",
+		"pid",
+		"comm",
+		"cgroup",
 	}
 
 	// Drop pid/comm/cgroup columns when not in --kprobes / --cgroup mode.

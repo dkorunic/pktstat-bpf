@@ -28,9 +28,7 @@ const (
 	Tbps         = 1000 * Gbps
 )
 
-// Protocol name constants used by the per-protocol switch arms in outputPlain,
-// MarshalJSON, and tui.go updateStatsTable. Match the values registered in
-// helpers.go protoNames.
+// Protocol names for outputPlain/MarshalJSON switch arms; match helpers.go protoNames.
 const (
 	protoTCP    = "TCP"
 	protoUDP    = "UDP"

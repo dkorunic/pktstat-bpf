@@ -149,8 +149,7 @@ func TestApplyArpEnabledOnLeavesDefault(t *testing.T) { //nolint:paralleltest //
 }
 
 func TestApplyCgrpfsMagicOnCgroupSkbSpec(t *testing.T) { //nolint:paralleltest // mutates package-level flag globals
-	// applyCgrpfsMagic takes the magic value as a parameter (no flag globals),
-	// but withFlags is still useful so other tests don't poison state.
+	// withFlags isolates global state across tests, even though we pass magic explicitly.
 	withFlags(t, 0, false)
 
 	spec, err := loadCgroupSkb()

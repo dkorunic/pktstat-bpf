@@ -28,8 +28,7 @@ func sniffAppProtoGo(peek []byte, l4proto uint8) uint8 { //nolint:gocyclo
 	b4 := peek[4]
 
 	if l4proto == ipprotoTCP { //nolint:nestif
-		// HTTP method / response / h2c preface. 5-byte disambiguation reduces
-		// false positives compared with a bare 4-byte prefix.
+		// HTTP method/response/h2c preface; 5-byte check cuts false positives.
 		switch w {
 		case 0x47455420, 0x50555420, 0x50524920: // "GET ", "PUT ", "PRI "
 			return appProtoHTTP
@@ -386,8 +385,7 @@ func TestSniffAppProtoMemcached(t *testing.T) {
 		{"Memcached SET request", []byte{0x80, 0x01, 0x00, 0x03, 0x08, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x13}},
 		// Binary response: magic=0x81, opcode=GET(0x00), extras-len=4 (flags).
 		{"Memcached GET response", []byte{0x81, 0x00, 0x00, 0x00, 0x04, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x09}},
-		// SASL boundary: opcode 0x20 (SASL List Mechs) and 0x26 (SASL Step) are the
-		// first and last SASL opcodes in the accepted range.
+		// SASL boundary: 0x20 (List Mechs) and 0x26 (Step), accepted endpoints.
 		{"Memcached SASL List Mechs (opcode 0x20)", []byte{0x80, 0x20, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00}},
 		{"Memcached SASL Step (opcode 0x26)", []byte{0x80, 0x26, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00}},
 	}

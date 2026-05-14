@@ -137,8 +137,7 @@ func greInnerName(t uint16) string {
 	return "0x" + strconv.FormatUint(uint64(t), 16)
 }
 
-// L7 app-proto identifiers. Must match the APP_PROTO_* #defines in
-// bpf/counter.h. Stored as uint8 values in the flow_app_proto BPF map.
+// L7 app-proto IDs; must match APP_PROTO_* in bpf/counter.h.
 const (
 	appProtoUnknown   uint8 = 0
 	appProtoHTTP      uint8 = 1
