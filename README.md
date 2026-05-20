@@ -162,6 +162,44 @@ Lists of XDP-compatible drivers:
 - [xdp-project XDP driver list](https://github.com/xdp-project/xdp-project/blob/master/areas/drivers/README.org)
 - [IO Visor XDP driver list](https://github.com/iovisor/bcc/blob/master/docs/kernel-versions.md#xdp)
 
+## Byte and packet accounting
+
+The `bytes` and `packets` columns are **not directly comparable across capture modes**. Each mode counts events at a different layer of the kernel stack, so the same flow yields different numbers depending on which hook is in use. All five BPF programs feed a single `update_val()` helper in `bpf/counter_common.h` that does `bytes += size; packets += 1`, but `size` and the granularity of one increment are defined per mode.
+
+### What `bytes` measures
+
+| Mode                      | Source of `size` per increment                                | Layer counted                        | Notes                                                                                                                                                                                           |
+| ------------------------- | ------------------------------------------------------------- | ------------------------------------ | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| TC (default)              | `skb->len` at TCX ingress/egress                              | L2+ (eth + VLAN + L3 + L4 + payload) | After GRO on ingress and before GSO segmentation on egress (when the NIC offloads TSO/GSO) — a single increment may cover a multi-MTU super-frame. No FCS.                                      |
+| XDP                       | `bpf_xdp_get_buff_len(xdp)`                                   | L2+ (eth + VLAN + L3 + L4 + payload) | Runs before GRO, so each increment is one NIC frame. Ingress only.                                                                                                                              |
+| cgroup_skb                | `skb->len` at `cgroup_skb/{ingress,egress}`                   | L3+ (IP + L4 + payload)              | The skb has already been advanced past the Ethernet header at this hook, so eth + VLAN bytes are excluded — roughly 14 B/packet lower than TC for the same flow.                                |
+| KProbes (TCP)             | `tcp_sendmsg`'s `size` arg, `tcp_cleanup_rbuf`'s `copied` arg | **App payload only**                 | No TCP/IP/eth headers, no ACK overhead. Counts payload queued by `send()`/`write()` or consumed from the receive queue — not what is actually on the wire.                                      |
+| KProbes (UDP)             | `udphdr->len` on send, `len` arg on `skb_consume_udp`         | UDP header + payload                 | Send path returns the UDP length field (8 B header + data); receive path uses the kernel-supplied delivered length.                                                                             |
+| KProbes (ICMP send)       | RFC-synthesized error size                                    | Synthesized, not wire bytes          | v4: `8 B ICMP hdr + orig IP hdr + ≤ 8 B body` (RFC 792). v6: `8 B ICMPv6 hdr + min(orig_packet, 1232)` (RFC 4443). This is the size of the error message being constructed, not the wire frame. |
+| KProbes (ICMP recv)       | IP payload length                                             | ICMP header + payload                | v4: IP `tot_len - ihl`; v6: IPv6 `payload_len`.                                                                                                                                                 |
+| KProbes (ESP/AH/GRE/OSPF) | `process_l4_skb` → IP payload length                          | L4 + payload (no IP/eth headers)     | TCP/UDP/ICMP are deliberately skipped on the `ip{,6}_{local_out,rcv}` hooks to avoid double-counting with the protocol-specific kprobes.                                                        |
+| KProbes (TCP retransmit)  | `skb->len` at `tcp_retransmit_skb`                            | TCP segment (header + data)          | Filed under synthetic proto `253` and displayed as a separate row; units differ from the surrounding `tcp_sendmsg` rows, which are app-payload bytes.                                           |
+
+### What `packets` measures
+
+`packets` is incremented once per call to the BPF program (one `update_val` invocation), so its meaning also shifts with mode:
+
+- **XDP** — one increment per NIC frame; closest to the wire packet count.
+- **TC** — one increment per skb at the netdev hook. GRO-aggregated ingress frames and pre-GSO egress skbs are _each_ a single packet from TC's viewpoint, so this count can be lower than the wire packet count under heavy TCP load.
+- **cgroup_skb** — one increment per skb at the cgroup hook (same GRO/GSO caveat as TC).
+- **KProbes** — one increment per kernel function call. For TCP this counts `tcp_sendmsg` / `tcp_cleanup_rbuf` invocations (i.e. app-level read/write calls), **not** TCP segments. For UDP it counts datagrams; for ICMP send it counts errors constructed; for ESP/AH/GRE/OSPF it counts skbs at `ip{,6}_{local_out,rcv}`. None of these match the wire packet count for TCP.
+
+### Practical comparison
+
+For the same TCP transfer of, say, an HTTP body of N bytes, the modes will report roughly:
+
+- **XDP** ≈ wire bytes received (eth + IP + TCP + payload, plus ACKs received). One packet per NIC frame.
+- **TC** ≈ both directions, with GRO/GSO inflation; totals are close to what `/proc/net/dev` reports for the interface.
+- **cgroup_skb** ≈ TC numbers minus ~14 B/packet (no eth header), but with PID attribution.
+- **KProbes** ≈ N bytes of app payload across `tcp_sendmsg` / `tcp_cleanup_rbuf` rows — no headers, no ACK overhead. Retransmits appear under proto `253` with TCP-segment-sized bytes (different units from the same flow's main row).
+
+**Rule of thumb:** XDP and TC are wire-ish, cgroup_skb is L3-ish, KProbes are app-ish (with the per-protocol exceptions in the table above). If you need numbers that compare cleanly to wire captures (`tcpdump`, NIC counters), prefer XDP or TC; if you need per-process attribution, accept that KProbe and cgroup_skb numbers are measured at higher layers and will under-report wire bytes accordingly.
+
 ## Usage
 
 ```shell
