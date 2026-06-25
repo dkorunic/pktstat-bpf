@@ -14,8 +14,6 @@ builds:
     goarch:
       - amd64
       - arm64
-universal_binaries:
-  - replace: true
 changelog:
   sort: asc
 archives:
