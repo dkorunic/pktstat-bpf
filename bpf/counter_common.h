@@ -343,6 +343,10 @@ detect_and_cache_l7_skb(struct sk_buff *skb, __u32 payload_off,
 // or 0 if the skb isn't TCP or isn't well-formed for our purposes.
 // Non-TCP protocols return 0 immediately, avoiding unnecessary header reads
 // that would be discarded by the caller (sniff_tcp_skb).
+//
+// Non-first fragments return 0 too: ip_rcv/ipv6_rcv run ahead of reassembly,
+// so the bytes at th_off are payload. Inert on the outbound side, which is
+// pre-fragmentation.
 static __attribute__((noinline)) __u32
 extract_tcp_flowkey_skb(struct sk_buff *skb, statkey *key) {
   unsigned char *head = (unsigned char *)BPF_CORE_READ(skb, head);
@@ -358,6 +362,10 @@ extract_tcp_flowkey_skb(struct sk_buff *skb, statkey *key) {
     struct iphdr *iphdr = (struct iphdr *)(head + nh_off);
     ip_proto = BPF_CORE_READ(iphdr, protocol);
     if (ip_proto != IPPROTO_TCP) {
+      return 0;
+    }
+    if (unlikely(bpf_ntohs(BPF_CORE_READ(iphdr, frag_off)) &
+                 IP4_FRAG_OFFSET_MASK)) {
       return 0;
     }
     __be32 sa = BPF_CORE_READ(iphdr, saddr);
@@ -377,17 +385,24 @@ extract_tcp_flowkey_skb(struct sk_buff *skb, statkey *key) {
                  ip_proto != IPPROTO_FRAGMENT && ip_proto != IPPROTO_DSTOPTS)) {
         break;
       }
-      __u8 pair[2];
-      if (bpf_probe_read_kernel(
-              pair, 2, head + nh_off + sizeof(*iphdr) + ext_skip) != 0) {
+      // 4 not 2: bytes 2-3 hold the frag offset. Safe — every header walked
+      // here is >= 8 bytes.
+      __u8 ext[4];
+      if (bpf_probe_read_kernel(ext, sizeof(ext),
+                                head + nh_off + sizeof(*iphdr) + ext_skip) !=
+          0) {
         return 0;
       }
       if (ip_proto == IPPROTO_FRAGMENT) {
-        ip_proto = pair[0];
+        if (unlikely((((__u16)ext[2] << 8) | (__u16)ext[3]) &
+                     IP6_FRAG_OFFSET_MASK)) {
+          return 0;
+        }
+        ip_proto = ext[0];
         ext_skip += 8;
       } else {
-        ip_proto = pair[0];
-        ext_skip += ((__u32)(pair[1] + 1) * 8);
+        ip_proto = ext[0];
+        ext_skip += ((__u32)(ext[1] + 1) * 8);
       }
     }
     if (ip_proto != IPPROTO_TCP) {
@@ -494,6 +509,12 @@ process_ip4(struct iphdr *ip4, void *data_end, statkey *key) {
 
   key->proto = ip4->protocol;
 
+  // Non-first fragment: no L4 header to decode. OK rather than NOK so the
+  // bytes still count, under a {src, dst, proto, 0, 0} row of their own.
+  if (unlikely((bpf_ntohs(ip4->frag_off) & IP4_FRAG_OFFSET_MASK) != 0)) {
+    return OK;
+  }
+
   switch (ip4->protocol) {
   case IPPROTO_TCP: {
     struct tcphdr *tcp = transport;
@@ -554,6 +575,7 @@ process_ip6(struct ipv6hdr *ip6, void *data_end, statkey *key) {
   // = 8.
   __u8 nexthdr = ip6->nexthdr;
   void *transport = (void *)ip6 + sizeof(*ip6);
+  bool non_first_frag = false;
 
   // Cap at 2: deeper chains attribute to the last ext header (intentional).
 #pragma unroll 2
@@ -565,6 +587,12 @@ process_ip6(struct ipv6hdr *ip6, void *data_end, statkey *key) {
     if (nexthdr == IPPROTO_FRAGMENT) {
       if (unlikely(transport + 8 > data_end))
         return NOK;
+      // Frag header: next(8) res(8) offset:13|res:2|M:1 ident(32).
+      __u16 frag_off = ((__u16)((__u8 *)transport)[2] << 8) |
+                       (__u16)((__u8 *)transport)[3];
+      if (frag_off & IP6_FRAG_OFFSET_MASK) {
+        non_first_frag = true;
+      }
       nexthdr = ((__u8 *)transport)[0];
       transport += 8;
     } else {
@@ -576,7 +604,12 @@ process_ip6(struct ipv6hdr *ip6, void *data_end, statkey *key) {
     }
   }
 
+  // Valid for every fragment: the frag header carries the upper-layer proto.
   key->proto = nexthdr;
+
+  if (unlikely(non_first_frag)) {
+    return OK;
+  }
 
   switch (nexthdr) {
   case IPPROTO_TCP: {

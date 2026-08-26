@@ -66,6 +66,16 @@ type xdpStatvalue struct {
 	Bytes   uint64
 }
 
+// Names of all BPF objects in the ELF.
+//
+// Used for safe lookups in a Collection or CollectionSpec.
+const (
+	xdpMapFlowAppProto     = "flow_app_proto"
+	xdpMapPktCount         = "pkt_count"
+	xdpProgXdpCountPackets = "xdp_count_packets"
+	xdpVarArpEnabled       = "arp_enabled"
+)
+
 // loadXdp returns the embedded CollectionSpec for xdp.
 func loadXdp() (*ebpf.CollectionSpec, error) {
 	reader := bytes.NewReader(_XdpBytes)
@@ -86,7 +96,7 @@ func loadXdp() (*ebpf.CollectionSpec, error) {
 //	*xdpMaps
 //
 // See ebpf.CollectionSpec.LoadAndAssign documentation for details.
-func loadXdpObjects(obj interface{}, opts *ebpf.CollectionOptions) error {
+func loadXdpObjects(obj any, opts *ebpf.CollectionOptions) error {
 	spec, err := loadXdp()
 	if err != nil {
 		return err

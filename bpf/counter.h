@@ -33,6 +33,11 @@
 #define IPPROTO_FRAGMENT 44
 #define IPPROTO_DSTOPTS 60
 
+// Non-zero offset => octets after the IP header are payload, not an L4
+// header; only fragment 0 carries one.
+#define IP4_FRAG_OFFSET_MASK 0x1FFF // iphdr.frag_off low 13 bits (RFC 791)
+#define IP6_FRAG_OFFSET_MASK 0xFFF8 // frag hdr bits 15..3 (RFC 8200 §4.5)
+
 // ARP EtherType (RFC 826).
 #define ETH_P_ARP 0x0806
 

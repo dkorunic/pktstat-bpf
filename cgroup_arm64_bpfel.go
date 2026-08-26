@@ -19,6 +19,15 @@ type cgroupCgroupevent struct {
 	Cgroupid uint64
 }
 
+// Names of all BPF objects in the ELF.
+//
+// Used for safe lookups in a Collection or CollectionSpec.
+const (
+	cgroupMapCgroupEvent       = "cgroup_event"
+	cgroupMapPerfCgroupEvent   = "perf_cgroup_event"
+	cgroupProgTraceCgroupMkdir = "trace_cgroup_mkdir"
+)
+
 // loadCgroup returns the embedded CollectionSpec for cgroup.
 func loadCgroup() (*ebpf.CollectionSpec, error) {
 	reader := bytes.NewReader(_CgroupBytes)
@@ -39,7 +48,7 @@ func loadCgroup() (*ebpf.CollectionSpec, error) {
 //	*cgroupMaps
 //
 // See ebpf.CollectionSpec.LoadAndAssign documentation for details.
-func loadCgroupObjects(obj interface{}, opts *ebpf.CollectionOptions) error {
+func loadCgroupObjects(obj any, opts *ebpf.CollectionOptions) error {
 	spec, err := loadCgroup()
 	if err != nil {
 		return err

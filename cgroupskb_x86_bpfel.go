@@ -72,6 +72,21 @@ type cgroupSkbStatvalue struct {
 	Bytes   uint64
 }
 
+// Names of all BPF objects in the ELF.
+//
+// Used for safe lookups in a Collection or CollectionSpec.
+const (
+	cgroupSkbMapFlowAppProto       = "flow_app_proto"
+	cgroupSkbMapPktCount           = "pkt_count"
+	cgroupSkbMapSockInfo           = "sock_info"
+	cgroupSkbProgCgroupSkbEgress   = "cgroup_skb_egress"
+	cgroupSkbProgCgroupSkbIngress  = "cgroup_skb_ingress"
+	cgroupSkbProgCgroupSockCreate  = "cgroup_sock_create"
+	cgroupSkbProgCgroupSockRelease = "cgroup_sock_release"
+	cgroupSkbVarArpEnabled         = "arp_enabled"
+	cgroupSkbVarCgrpfsMagic        = "cgrpfs_magic"
+)
+
 // loadCgroupSkb returns the embedded CollectionSpec for cgroupSkb.
 func loadCgroupSkb() (*ebpf.CollectionSpec, error) {
 	reader := bytes.NewReader(_CgroupSkbBytes)
@@ -92,7 +107,7 @@ func loadCgroupSkb() (*ebpf.CollectionSpec, error) {
 //	*cgroupSkbMaps
 //
 // See ebpf.CollectionSpec.LoadAndAssign documentation for details.
-func loadCgroupSkbObjects(obj interface{}, opts *ebpf.CollectionOptions) error {
+func loadCgroupSkbObjects(obj any, opts *ebpf.CollectionOptions) error {
 	spec, err := loadCgroupSkb()
 	if err != nil {
 		return err

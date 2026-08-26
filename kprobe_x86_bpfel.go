@@ -66,6 +66,30 @@ type kprobeStatvalue struct {
 	Bytes   uint64
 }
 
+// Names of all BPF objects in the ELF.
+//
+// Used for safe lookups in a Collection or CollectionSpec.
+const (
+	kprobeMapFlowAppProto      = "flow_app_proto"
+	kprobeMapPktCount          = "pkt_count"
+	kprobeProgIcmpSend         = "__icmp_send"
+	kprobeProgIcmp6Send        = "icmp6_send"
+	kprobeProgIcmpRcv          = "icmp_rcv"
+	kprobeProgIcmpv6Rcv        = "icmpv6_rcv"
+	kprobeProgIp6LocalOut      = "ip6_local_out"
+	kprobeProgIp6SendSkb       = "ip6_send_skb"
+	kprobeProgIpLocalOut       = "ip_local_out"
+	kprobeProgIpRcv            = "ip_rcv"
+	kprobeProgIpSendSkb        = "ip_send_skb"
+	kprobeProgIpv6Rcv          = "ipv6_rcv"
+	kprobeProgSkbConsumeUdp    = "skb_consume_udp"
+	kprobeProgTcpCleanupRbuf   = "tcp_cleanup_rbuf"
+	kprobeProgTcpRetransmitSkb = "tcp_retransmit_skb"
+	kprobeProgTcpSendmsg       = "tcp_sendmsg"
+	kprobeVarArpEnabled        = "arp_enabled"
+	kprobeVarCgrpfsMagic       = "cgrpfs_magic"
+)
+
 // loadKprobe returns the embedded CollectionSpec for kprobe.
 func loadKprobe() (*ebpf.CollectionSpec, error) {
 	reader := bytes.NewReader(_KprobeBytes)
@@ -86,7 +110,7 @@ func loadKprobe() (*ebpf.CollectionSpec, error) {
 //	*kprobeMaps
 //
 // See ebpf.CollectionSpec.LoadAndAssign documentation for details.
-func loadKprobeObjects(obj interface{}, opts *ebpf.CollectionOptions) error {
+func loadKprobeObjects(obj any, opts *ebpf.CollectionOptions) error {
 	spec, err := loadKprobe()
 	if err != nil {
 		return err
