@@ -32,24 +32,89 @@ const (
 	Cgroup2FsMagic           = 0x63677270
 	TmpFsMagic               = 0x1021994
 	cgroupRefreshMinInterval = 250 * time.Millisecond
+
+	// cgroupUnknownMax bounds the negative cache; unresolvable ids (cgroups
+	// that died before we saw their traffic) would otherwise accumulate for
+	// the life of the process.
+	cgroupUnknownMax = 4096
 )
 
 var (
+	// cGroupCache holds live cgroup id → path. Walks replace it wholesale
+	// (see cgroupInstall) so removed cgroups expire and a reused kernfs id
+	// cannot answer with the previous occupant's path.
 	cGroupCache     = make(map[uint64]string)
 	cGroupCacheLock sync.RWMutex
 	cGroupRebuildMu sync.Mutex // serialises FS walks
 	cGroupInitOnce  sync.Once
 
+	// cGroupUnknown records ids no walk resolved, purely so repeat lookups
+	// skip the walk; the placeholder text is a pure function of the id, so
+	// only membership matters. Guarded by cGroupCacheLock.
+	cGroupUnknown = make(map[uint64]struct{})
+
+	// cGroupPending buffers cgroup_mkdir events seen mid-walk: the walk
+	// cannot observe them, so cgroupInstall layers them over its result
+	// instead of letting the replace drop them. Guarded by cGroupCacheLock.
+	cGroupPending    = make(map[uint64]string)
+	cGroupWalkActive bool
 	// lastCgroupRefreshNano coalesces bursty refresh callers against the last walk.
 	lastCgroupRefreshNano atomic.Int64
 )
 
-// cGroupToPath takes a cgroup ID and returns the corresponding path in the cgroup filesystem.
-// The function will cache cgroup paths for better performance, but it will also invalidate the cache
-// if it detects a change in the cgroup filesystem. If the cgroup ID is not found in the cache, it will
-// refresh the cache and return an empty string.
+// unknownCgroupPath renders the placeholder for an unresolved id. Deterministic
+// in id, which is why cGroupUnknown stores membership only.
+func unknownCgroupPath(id uint64) string {
+	return "cgroup-id: " + strconv.FormatUint(id, 10)
+}
+
+// cgroupWalkBegin opens the window in which cgroup_mkdir events are buffered,
+// since a walk cannot observe directories created after it passes them.
 //
-// The function is safe to call concurrently.
+// Caller must hold cGroupRebuildMu across begin → walk → install: a single
+// cGroupWalkActive flag cannot represent overlapping windows.
+func cgroupWalkBegin() {
+	cGroupCacheLock.Lock()
+	defer cGroupCacheLock.Unlock()
+
+	clear(cGroupPending)
+
+	cGroupWalkActive = true
+}
+
+// cgroupInstall publishes fresh as the cache and closes the walk window. The
+// walk is authoritative — that is what bounds the map — with mid-walk mkdir
+// events layered back on top. Takes ownership of fresh.
+func cgroupInstall(fresh map[uint64]string) {
+	cGroupCacheLock.Lock()
+	defer cGroupCacheLock.Unlock()
+
+	maps.Copy(fresh, cGroupPending)
+	clear(cGroupPending)
+
+	cGroupWalkActive = false
+	cGroupCache = fresh
+}
+
+// markCgroupUnknown records an unresolved id so the next lookup skips the
+// walk. Overflow drops the whole set rather than evicting one entry: this only
+// suppresses walks, so forgetting costs a walk, never correctness.
+func markCgroupUnknown(id uint64) {
+	cGroupCacheLock.Lock()
+	defer cGroupCacheLock.Unlock()
+
+	if len(cGroupUnknown) >= cgroupUnknownMax {
+		clear(cGroupUnknown)
+	}
+
+	cGroupUnknown[id] = struct{}{}
+}
+
+// cGroupToPath resolves a cgroup id to its path, walking the filesystem at
+// most once per unresolved id: misses are remembered and answered with a
+// "cgroup-id: N" placeholder thereafter.
+//
+// Returns "" only for id 0, the no-cgroup sentinel. Safe for concurrent use.
 func cGroupToPath(id uint64) string {
 	if id == 0 {
 		return ""
@@ -57,10 +122,15 @@ func cGroupToPath(id uint64) string {
 
 	cGroupCacheLock.RLock()
 	p, ok := cGroupCache[id]
+	_, unknown := cGroupUnknown[id]
 	cGroupCacheLock.RUnlock()
 
 	if ok {
 		return p
+	}
+
+	if unknown {
+		return unknownCgroupPath(id)
 	}
 
 	// Single-walker gate prevents a thundering-herd of duplicate FS walks.
@@ -77,24 +147,28 @@ func cGroupToPath(id uint64) string {
 		return p
 	}
 
+	cgroupWalkBegin()
+
 	// Walk outside the cache lock so readers aren't blocked.
 	fresh := make(map[uint64]string, hint)
 	_ = cGroupWalk(CGroupRootPath, fresh)
 
-	// Synthesise placeholder after merge to avoid clobbering watcher writes.
-	cGroupCacheLock.Lock()
-	maps.Copy(cGroupCache, fresh)
-
-	p, ok = cGroupCache[id]
-	if !ok {
-		p = "cgroup-id: " + strconv.FormatUint(id, 10)
-		cGroupCache[id] = p
-	}
-	cGroupCacheLock.Unlock()
+	cgroupInstall(fresh)
 
 	lastCgroupRefreshNano.Store(time.Now().UnixNano())
 
-	return p
+	cGroupCacheLock.RLock()
+	p, ok = cGroupCache[id]
+	cGroupCacheLock.RUnlock()
+
+	if ok {
+		return p
+	}
+
+	// Gone, or outside the hierarchy we walk.
+	markCgroupUnknown(id)
+
+	return unknownCgroupPath(id)
 }
 
 // cGroupCacheInit initializes the cgroup cache and starts a goroutine to watch the cgroup filesystem for create events.
@@ -106,6 +180,8 @@ func cGroupCacheInit() {
 	cGroupInitOnce.Do(func() {
 		cGroupCacheLock.Lock()
 		cGroupCache = make(map[uint64]string)
+		clear(cGroupUnknown)
+		clear(cGroupPending)
 		cGroupCacheLock.Unlock()
 
 		cgroupCacheRefresh(CGroupRootPath)
@@ -114,11 +190,9 @@ func cGroupCacheInit() {
 
 // cgroupCacheRefresh refreshes the cache with the current cgroup paths.
 //
-// It walks the cgroup filesystem from the given directory and builds a new
-// mapping outside of any lock. The fresh entries are then merged into the
-// existing cache under a brief write lock, preserving any entries that
-// cGroupWatcher wrote concurrently. cGroupRebuildMu is held for the duration
-// so that concurrent callers do not each trigger a redundant walk.
+// The walk runs outside any lock and its result replaces the cache rather than
+// merging into it — that is what expires removed cgroups. cGroupRebuildMu is
+// held throughout so concurrent callers do not each trigger a walk.
 //
 // Debounced via lastCgroupRefreshNano: when bursts of LostSamples events
 // arrive (or many cold misses queue behind one walker), all but the first
@@ -144,12 +218,12 @@ func cgroupCacheRefresh(dir string) {
 	hint := len(cGroupCache)
 	cGroupCacheLock.RUnlock()
 
+	cgroupWalkBegin()
+
 	fresh := make(map[uint64]string, hint)
 	_ = cGroupWalk(dir, fresh)
 
-	cGroupCacheLock.Lock()
-	maps.Copy(cGroupCache, fresh)
-	cGroupCacheLock.Unlock()
+	cgroupInstall(fresh)
 
 	lastCgroupRefreshNano.Store(time.Now().UnixNano())
 }
@@ -158,6 +232,11 @@ func cgroupCacheRefresh(dir string) {
 //
 // The function takes a directory as an argument, which is the root of the cgroup filesystem. It walks the directory and its subdirectories, and for each subdirectory, it extracts the cgroup ID from the subdirectory's inode using `getInodeID`.
 // The function returns a mapping of cgroup IDs to their corresponding paths. If an error occurs during the walk, it is returned as the second argument.
+//
+// v1 caveat: /sys/fs/cgroup is tmpfs with one mount per subsystem, so this
+// mixes tmpfs inodes (subsystem roots) with kernfs ids from per-hierarchy id
+// spaces that can collide — last writer wins. Accepted: v2 has one id space,
+// and the BPF side only reports subsys[0] under v1.
 //
 // The function is safe to call concurrently.
 func cGroupWalk(dir string, mapping map[uint64]string) error {
@@ -264,6 +343,12 @@ func cGroupWatcher(objs cgroupObjects) (*perf.Reader, error) {
 
 			cGroupCacheLock.Lock()
 			cGroupCache[event.Cgroupid] = cgroupPath
+			// A walk in flight cannot have seen this mkdir; stash it.
+			if cGroupWalkActive {
+				cGroupPending[event.Cgroupid] = cgroupPath
+			}
+
+			delete(cGroupUnknown, event.Cgroupid)
 			cGroupCacheLock.Unlock()
 		}
 	}()
