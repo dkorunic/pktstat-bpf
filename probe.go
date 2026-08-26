@@ -266,6 +266,10 @@ func startCgroup(objs cgroupSkbObjects, cgroupPath string, links []link.Link) []
 // This function checks if the RawTracepoint program type is supported by the kernel.
 // If supported, it attaches the TraceCgroupMkdir eBPF program to the "cgroup_mkdir" tracepoint.
 //
+// The watcher only keeps the cgroup id→path cache warm, so neither an
+// unsupported program type nor a failed attach is fatal: cGroupToPath falls
+// back to walking the filesystem. Losing it costs walks, not correctness.
+//
 // Parameters:
 //
 //	objs cgroupObjects: Contains the eBPF programs, including the TraceCgroupMkdir program to be attached.
@@ -293,7 +297,9 @@ func startCGroupTrace(objs cgroupObjects, links []link.Link) []link.Link {
 		Name:    "cgroup_mkdir",
 	})
 	if err != nil {
-		log.Fatalf("Error attaching TraceCgroupMkdirSignal: %v", err)
+		log.Printf("Unable to attach TraceCgroupMkdir raw tracepoint: %v", err)
+
+		return links
 	}
 
 	links = append(links, l)
