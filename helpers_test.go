@@ -132,9 +132,10 @@ func TestProtoToString(t *testing.T) {
 		{"SCTP", 132, "SCTP"},
 		{"TCP-RETX synthetic", 253, "TCP-RETX"},
 		{"ARP synthetic", 254, "ARP"},
-		{"Fragment (255)", 255, "Fragment"},
 		// Unregistered values fall through to "Unknown".
 		{"unassigned 7", 7, "Unknown"},
+		// 255 is IANA-Reserved and never emitted by the BPF side.
+		{"reserved 255", 255, "Unknown"},
 		{"unassigned 200", 200, "Unknown"},
 		{"unassigned 252", 252, "Unknown"},
 	}

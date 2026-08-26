@@ -75,7 +75,6 @@ var protoNames = func() [256]string {
 		143: "Ethernet",
 		253: "TCP-RETX", // synthetic; TCP retransmission
 		254: "ARP",      // synthetic; not a real IP protocol
-		255: "Fragment",
 	} {
 		a[k] = v
 	}
