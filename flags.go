@@ -26,12 +26,13 @@ const (
 )
 
 var (
-	ifname, xdpMode, useCGroup, aggregateBy                                    *string
+	ifname, xdpMode, useCGroup, aggregateBy, exitOver                          *string
 	jsonOutput, version, help, useXDP, useKProbes, enableTUI, noARP, aggregate *bool
 	timeout, refresh                                                           *time.Duration
 	maxEntries                                                                 *uint
 	xdpAttachFlags                                                             link.XDPAttachFlags
 	aggregateKeyFn                                                             func(statEntry) string
+	exitOverBps                                                                float64
 )
 
 func parseFlags() {
@@ -58,6 +59,8 @@ func parseFlags() {
 	aggregate = fs.Bool('a', "aggregate", "if true, output aggregate totals instead of per-flow rows")
 	aggregateBy = fs.StringLong("aggregate-by", "",
 		"aggregate grouped by a key (implies --aggregate); one of: "+strings.Join(aggregateKeys(), ", "))
+	exitOver = fs.StringLong("exit-over", "",
+		"exit with status 2 if the aggregate bitrate exceeds this threshold, e.g. 100Mbps (implies --aggregate)")
 
 	var err error
 
@@ -112,14 +115,32 @@ func parseFlags() {
 		}
 	}
 
+	// --exit-over implies --aggregate too, and composes with --aggregate-by:
+	// grouped rows are then checked individually. Parsed here so a malformed
+	// threshold fails immediately rather than after the capture window.
+	if *exitOver != "" {
+		*aggregate = true
+
+		var err error
+
+		exitOverBps, err = parseBitrate(*exitOver)
+		if err != nil {
+			fmt.Printf("Error invalid --exit-over threshold %q: %v\n", *exitOver, err)
+
+			os.Exit(1)
+		}
+	}
+
 	if *enableTUI {
 		*timeout = 0
 
-		// The TUI's column layout is per-flow; there is no aggregate view yet.
+		// The TUI's column layout is per-flow; there is no aggregate view yet,
+		// and a threshold check needs a run that actually terminates.
 		if *aggregate {
-			log.Printf("Warning: --aggregate is ignored in TUI mode")
+			log.Printf("Warning: --aggregate, --aggregate-by and --exit-over are ignored in TUI mode")
 
 			*aggregate = false
+			*exitOver = ""
 		}
 	}
 }

@@ -22,9 +22,25 @@ import (
 	"github.com/hako/durafmt"
 )
 
-// main is the entry point of the program.
+// exitThresholdExceeded is the status returned when --exit-over is set and the
+// measured bitrate is above it. Deliberately distinct from 1, which means the
+// tool failed: a monitoring script must be able to tell "traffic was high"
+// from "the measurement never happened", or a permissions error would page
+// someone about bandwidth. Mirrors the Nagios-plugin split between CRITICAL
+// and UNKNOWN.
+const exitThresholdExceeded = 2
+
+// main is the entry point; it turns run's status into the process exit code.
 //
-// It loads the appropriate eBPF object file on demand based on the selected
+// The split exists so that os.Exit is called in exactly one place, after run
+// has returned and its defers have executed. Exiting from inside run would
+// skip them, leaving eBPF links attached — for XDP that means a program still
+// bound to the interface after the process is gone.
+func main() {
+	os.Exit(run())
+}
+
+// run loads the appropriate eBPF object file on demand based on the selected
 // capture mode, removes resource limits for kernels <5.11, and attaches the
 // eBPF programs to the relevant hooks.
 //
@@ -37,7 +53,10 @@ import (
 //
 // After starting the packet capture method, it waits for the context to be
 // canceled, and then closes all the links and prints the final statistics.
-func main() {
+//
+// Returns the process exit code: 0 normally, exitThresholdExceeded when
+// --exit-over is tripped, or 1 when the counters could not be read.
+func run() int {
 	parseFlags()
 
 	// Remove resource limits for kernels <5.11
@@ -53,26 +72,7 @@ func main() {
 		}
 	}()
 
-	// Warn on conflicting capture-mode flags; switch silently picks first match.
-	{
-		captureModes := 0
-
-		if *useCGroup != "" {
-			captureModes++
-		}
-
-		if *useKProbes {
-			captureModes++
-		}
-
-		if *useXDP {
-			captureModes++
-		}
-
-		if captureModes > 1 {
-			log.Printf("Warning: multiple capture modes specified; precedence is --cgroup > --kprobes > --xdp > TC (default)")
-		}
-	}
+	warnOnMultipleCaptureModes()
 
 	// Set below from whichever mode-specific BPF object is loaded.
 	var (
@@ -234,21 +234,55 @@ func main() {
 	if *enableTUI {
 		drawTUI(pktCount, l7Map, startTime)
 
-		return
+		return 0
 	}
 
-	// Fatal handling stays in main so runCLI's defers always run first.
-	if err := runCLI(c1, cancel, pktCount, l7Map, totalCount, startTime); err != nil {
-		log.Fatalf("Error reading eBPF map: %v", err)
+	exceeded, err := runCLI(c1, cancel, pktCount, l7Map, totalCount, startTime)
+	if err != nil {
+		log.Printf("Error reading eBPF map: %v", err)
+
+		return 1
+	}
+
+	if exceeded {
+		return exitThresholdExceeded
+	}
+
+	return 0
+}
+
+// warnOnMultipleCaptureModes logs when more than one capture-mode flag was
+// passed. The mode switch silently takes the first match in precedence order
+// rather than erroring, so without this the extra flags vanish unremarked.
+func warnOnMultipleCaptureModes() {
+	captureModes := 0
+
+	if *useCGroup != "" {
+		captureModes++
+	}
+
+	if *useKProbes {
+		captureModes++
+	}
+
+	if *useXDP {
+		captureModes++
+	}
+
+	if captureModes > 1 {
+		log.Printf("Warning: multiple capture modes specified; precedence is --cgroup > --kprobes > --xdp > TC (default)")
 	}
 }
 
 // runCLI waits for the capture window to close (timeout or signal), then reads
-// the counters once and renders them. Split out of main so that main stays a
+// the counters once and renders them. Split out of run so that run stays a
 // mode-selection switch and neither function trips the complexity limit.
+//
+// The bool reports whether --exit-over was tripped; it is always false when
+// that flag is unset or the output is not aggregated.
 func runCLI(ctx context.Context, cancel context.CancelFunc,
 	pktCount, l7Map, totalCount *ebpf.Map, startTime time.Time,
-) error {
+) (bool, error) {
 	signalCh := make(chan os.Signal, 1)
 
 	signal.Notify(signalCh, os.Interrupt, syscall.SIGTERM)
@@ -278,19 +312,17 @@ func runCLI(ctx context.Context, cancel context.CancelFunc,
 	if aggregateTotalsOnly() {
 		total, err := readTotals(totalCount, startTime)
 		if err != nil {
-			return err
+			return false, err
 		}
 
-		emitAggregate([]aggEntry{total})
-
-		return nil
+		return emitAggregate([]aggEntry{total}), nil
 	}
 
 	m, err := processMap(pktCount, l7Map, startTime, bitrateSort, nil)
 	if err != nil {
 		// LRU per-CPU iteration can abort under churn; anything else is fatal.
 		if !errors.Is(err, ebpf.ErrIterationAborted) {
-			return err
+			return false, err
 		}
 
 		_, _ = fmt.Fprint(os.Stderr, "Iteration aborted while reading eBPF map, output may be incomplete\n")
@@ -298,25 +330,28 @@ func runCLI(ctx context.Context, cancel context.CancelFunc,
 
 	switch {
 	case *aggregate:
-		emitAggregate(aggregateStats(m, aggregateKeyFn))
+		return emitAggregate(aggregateStats(m, aggregateKeyFn)), nil
 	case *jsonOutput:
 		outputJSON(m)
 	default:
 		fmt.Print(outputPlain(m, *useKProbes || *useCGroup != ""))
 	}
 
-	return nil
+	return false, nil
 }
 
-// emitAggregate renders aggregate rows in whichever format was requested.
-func emitAggregate(agg []aggEntry) {
+// emitAggregate renders aggregate rows in whichever format was requested and
+// reports whether any of them tripped the --exit-over threshold. Output always
+// happens first, so a script can log the measured figure and branch on the
+// exit code from the same run.
+func emitAggregate(agg []aggEntry) bool {
 	if *jsonOutput {
 		outputJSON(agg)
-
-		return
+	} else {
+		fmt.Print(outputAggPlain(agg))
 	}
 
-	fmt.Print(outputAggPlain(agg))
+	return *exitOver != "" && exceedsBitrate(agg, exitOverBps)
 }
 
 // loadAndPatchSpec loads name's BPF CollectionSpec and applies every runtime

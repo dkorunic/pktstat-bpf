@@ -9,7 +9,9 @@ import (
 	"bytes"
 	"cmp"
 	"encoding/json"
+	"errors"
 	"fmt"
+	"math"
 	"os"
 	"slices"
 	"strconv"
@@ -357,6 +359,81 @@ const aggUnknown = "unknown"
 // aggPerEntryHint is a rough per-row byte budget for the plain aggregate
 // renderer; rows are far shorter than per-flow ones (no addresses or ports).
 const aggPerEntryHint = 96
+
+var (
+	errEmptyBitrate     = errors.New("value is empty")
+	errNonFiniteBitrate = errors.New("value must be a finite, non-negative number")
+)
+
+// bitrateUnits maps a lowercased suffix to its multiplier. Order matters: the
+// table is scanned top-down and "kbps" must be tried before "bps", which it
+// ends with. Units are decimal (1000-based), matching formatBitrate.
+var bitrateUnits = []struct {
+	suffix string
+	mult   float64
+}{
+	{"tbps", Tbps},
+	{"gbps", Gbps},
+	{"mbps", Mbps},
+	{"kbps", Kbps},
+	{"bps", Bps},
+	{"t", Tbps},
+	{"g", Gbps},
+	{"m", Mbps},
+	{"k", Kbps},
+}
+
+// parseBitrate parses a bitrate threshold such as "100Mbps", "1.5 Gbps",
+// "2G" or a bare "1000" (bits per second, the unit when no suffix is given).
+//
+// It is deliberately the inverse of formatBitrate — same decimal units, same
+// suffixes, whitespace and case tolerated — so a figure printed by pktstat-bpf
+// can be pasted straight back in as a threshold.
+func parseBitrate(s string) (float64, error) {
+	num := strings.ToLower(strings.TrimSpace(s))
+	if num == "" {
+		return 0, errEmptyBitrate
+	}
+
+	mult := Bps
+
+	for _, u := range bitrateUnits {
+		if rest, ok := strings.CutSuffix(num, u.suffix); ok {
+			mult = u.mult
+			num = strings.TrimSpace(rest)
+
+			break
+		}
+	}
+
+	v, err := strconv.ParseFloat(num, 64)
+	if err != nil {
+		return 0, fmt.Errorf("not a number: %w", err)
+	}
+
+	// Guard the threshold comparison: NaN would make every comparison false
+	// and silently disable the check, and Inf/negative are nonsense as limits.
+	if math.IsNaN(v) || math.IsInf(v, 0) || v < 0 {
+		return 0, errNonFiniteBitrate
+	}
+
+	return v * mult, nil
+}
+
+// exceedsBitrate reports whether any aggregate row is strictly above limit.
+//
+// "Any row" is what makes this useful with --aggregate-by: the check fires
+// when a single cgroup or process crosses the line, rather than only when the
+// combined traffic does. With a plain --aggregate there is one row anyway.
+func exceedsBitrate(agg []aggEntry, limit float64) bool {
+	for i := range agg {
+		if agg[i].Bitrate > limit {
+			return true
+		}
+	}
+
+	return false
+}
 
 // aggKeyFuncs maps an --aggregate-by name to its grouping accessor. Keeping
 // the table and the flag help text derived from the same source means a new

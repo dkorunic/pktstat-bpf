@@ -59,7 +59,7 @@ pktstat-bpf is a Linux eBPF packet statistics tool with two layers:
 - `cgroup.go` — `cgroup-id → path` cache populated by walking `/sys/fs/cgroup` and consuming `cgroup_mkdir` perf events.
 - `output.go` — `processMap`, sort functions, `outputPlain`/`outputJSON`, bitrate formatting, and the `MarshalJSON` override that decodes protocol-packed port fields into named JSON keys.
 - `tui.go` — rivo/tview TUI refreshed on `--refresh` interval. Column `l7` (index 4) shows the `AppProto` field.
-- `flags.go` — flag parsing via `peterbourgon/ff/v4`; exposes package-level pointers (`useXDP`, `useKProbes`, `useCGroup`, `maxEntries`, `noARP`, …).
+- `flags.go` — flag parsing via `peterbourgon/ff/v4`; exposes package-level pointers (`useXDP`, `useKProbes`, `useCGroup`, `maxEntries`, `noARP`, …). Validation that would otherwise land in `main` happens here: `--aggregate-by` resolves to `aggregateKeyFn`, and `--exit-over` parses to `exitOverBps` via `parseBitrate`, both failing fast on a typo rather than after the capture window has elapsed. Both imply `--aggregate`.
 - `types.go` — `statEntry` (per-flow stats, includes `AppProto string`) and `kprobeHook`.
 - `helpers.go` — `bytesToAddr`, `protoToString` (with `protoNames` table), `findFirstEtherIface`, protocol-decoder helpers `ospfTypeName`/`arpOpName`/`greInnerName`, and the `appProto*` constants + `appProtoToString` for L7 display.
 - `init.go` — version variables (`GitTag`, `GitCommit`, `GitDirty`, `BuildTime`) injected at link time.
@@ -77,6 +77,7 @@ pktstat-bpf is a Linux eBPF packet statistics tool with two layers:
   - `applyMaxEntries` — overrides `pkt_count`, `sock_info`, and `flow_app_proto` map sizes from `--max-entries`.
   - `applyArpEnabled` — disables ARP capture in TC/XDP when `--no-arp` is set.
   - `applyAggregateOnly` — set by `--aggregate` (grand total only). Folds away every per-flow write: the `pkt_count` hash update, `detect_and_cache_l7`, `detect_and_cache_l7_skb`, and `sniff_tcp_skb`. **Not** applied for `--aggregate-by`, which needs the per-flow rows to group by and therefore keeps the normal capture path — see `aggregateTotalsOnly()`.
+- **Exit codes**. `main` is a one-line wrapper around `run() int`, so that `os.Exit` is called in exactly one place *after* `run`'s defers have detached links and closed objects — exiting from inside `run` would leave an XDP program bound to the interface. `0` = normal, `2` (`exitThresholdExceeded`) = `--exit-over` tripped, `1` = the counters could not be read. The `1`/`2` split matters: a monitoring script must not confuse an attach failure with a traffic spike. Note the load-time `log.Fatalf` calls in `run` still exit directly, but they all fire before any link is attached.
 - **Mode precedence**. When multiple capture-mode flags are passed, `main.go`'s switch picks the first match in order `--cgroup > --kprobes > --xdp > TC (default)` and logs a warning; it does not error.
 
 ## Capture Modes
@@ -90,7 +91,7 @@ Four mutually-exclusive modes selected at runtime:
 | `--kprobes` | KProbes + PID/CGroup tracking | ≥4.10 + BTF |
 | `--cgroup <path>` | CGroup SKB + PID tracking | ≥4.10 + BTF |
 
-Notable runtime knobs: `--xdp_mode {auto,generic,native,offload}`, `--max-entries N` (overrides BPF map size), `--no-arp` (skips ARP dispatch in TC/XDP), `--aggregate` / `-a` and `--aggregate-by KEY` (totals instead of per-flow rows), `--tui` / `-g` (interactive), `--json`, `--timeout`, `--refresh`.
+Notable runtime knobs: `--xdp_mode {auto,generic,native,offload}`, `--max-entries N` (overrides BPF map size), `--no-arp` (skips ARP dispatch in TC/XDP), `--aggregate` / `-a` and `--aggregate-by KEY` (totals instead of per-flow rows), `--exit-over BITRATE` (threshold check via exit status), `--tui` / `-g` (interactive), `--json`, `--timeout`, `--refresh`.
 
 ## Code Style & Tooling
 

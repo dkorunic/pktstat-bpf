@@ -222,6 +222,7 @@ FLAGS
       --no-arp                disable ARP capture in TC/XDP modes (skips parse_arp dispatch)
   -a, --aggregate             if true, output aggregate totals instead of per-flow rows
       --aggregate-by STRING   aggregate grouped by a key (implies --aggregate); one of: cgroup, comm, dstip, pid, proto, srcip
+      --exit-over STRING      exit with status 2 if the aggregate bitrate exceeds this threshold, e.g. 100Mbps (implies --aggregate)
 ```
 
 Use `--iface` to specify the network interface to capture on.
@@ -296,6 +297,31 @@ key: dig, bitrate: 2.00 Kbps, packets: 3, bytes: 250, flows: 1
 Grouping needs the per-flow rows to attribute traffic, so `--aggregate-by` keeps the normal capture path and sums in userspace. It therefore carries the same LRU caveat as regular output, and it *does* report `flows`. Rows whose grouping field is empty — for example `--aggregate-by cgroup` in TC or XDP mode, which have no cgroup attribution — are collected under the key `unknown`.
 
 Both forms are CLI-only; `--aggregate` is ignored with `--tui`.
+
+### Exit-code thresholds
+
+`--exit-over <bitrate>` turns the threshold comparison itself into the exit status, so a monitoring script needs no parsing at all:
+
+```shell
+pktstat-bpf --cgroup /sys/fs/cgroup/mygroup --timeout 5s --exit-over 100Mbps || alert
+```
+
+| Exit status | Meaning |
+| ----------- | ------- |
+| `0` | Under the threshold |
+| `2` | Threshold exceeded |
+| `1` | The measurement failed (bad flags, attach error, unreadable counters) |
+
+`2` rather than `1` for the exceeded case is deliberate: a permissions or attach failure must not be indistinguishable from a genuine traffic spike, or a broken run would page someone about bandwidth. The split follows the Nagios-plugin convention, where `2` is CRITICAL and a non-result is its own status.
+
+The threshold accepts the same units `pktstat-bpf` prints — `100Mbps`, `1.5 Gbps`, `2G`, or a bare `1000000` for bits per second — so a figure from earlier output can be pasted straight back in. It implies `--aggregate`, and the statistics are still printed normally, so you can log the measured value and branch on the status from one run.
+
+It also composes with `--aggregate-by`, where it fires if **any** single group is over the line rather than only when the combined total is:
+
+```shell
+# Alert when any one process exceeds 50 Mbps, not just when the host does.
+pktstat-bpf --kprobes --timeout 5s --aggregate-by comm --exit-over 50Mbps
+```
 
 > [!NOTE]
 > Which capture mode you pick changes what the total *means*. `--cgroup` counts `skb->len`, closest to real bandwidth. `--kprobes` counts payload bytes handed down from userspace at hooks like `tcp_sendmsg`, which is not the same as wire bytes. For bandwidth threshold checks against a cgroup, prefer `--cgroup`. See [Byte and packet accounting](#byte-and-packet-accounting).

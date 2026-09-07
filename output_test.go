@@ -14,9 +14,10 @@ import (
 
 // Shared test literals; repeated inline they trip goconst across the package.
 const (
-	testSrcIP = "10.0.0.1"
-	testDstIP = "10.0.0.2"
-	testComm  = "curl"
+	testSrcIP     = "10.0.0.1"
+	testDstIP     = "10.0.0.2"
+	testComm      = "curl"
+	testThreshold = "100Mbps"
 )
 
 // mkEntry constructs a minimal statEntry for outputPlain tests.
@@ -1026,6 +1027,156 @@ func TestAggregateTotalsOnly(t *testing.T) { //nolint:paralleltest // mutates pa
 
 			if got := aggregateTotalsOnly(); got != tt.want {
 				t.Errorf("aggregateTotalsOnly() = %v, want %v", got, tt.want)
+			}
+		})
+	}
+}
+
+func TestParseBitrate(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name string
+		in   string
+		want float64
+	}{
+		{name: "bare number is bps", in: "1000", want: 1000},
+		{name: "zero", in: "0", want: 0},
+		{name: "explicit bps", in: "1500bps", want: 1500},
+		{name: "kbps", in: "10Kbps", want: 10_000},
+		{name: "mbps", in: testThreshold, want: 100_000_000},
+		{name: "gbps", in: "1Gbps", want: 1_000_000_000},
+		{name: "tbps", in: "1Tbps", want: 1_000_000_000_000},
+		{name: "fractional", in: "1.5Gbps", want: 1_500_000_000},
+		{name: "lowercase", in: "100mbps", want: 100_000_000},
+		{name: "uppercase", in: "100MBPS", want: 100_000_000},
+		{name: "short unit", in: "2G", want: 2_000_000_000},
+		{name: "space before unit", in: "8.00 Kbps", want: 8_000},
+		{name: "surrounding space", in: "  " + testThreshold + "  ", want: 100_000_000},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			got, err := parseBitrate(tt.in)
+			if err != nil {
+				t.Fatalf("parseBitrate(%q) returned error: %v", tt.in, err)
+			}
+
+			if got != tt.want {
+				t.Errorf("parseBitrate(%q) = %v, want %v", tt.in, got, tt.want)
+			}
+		})
+	}
+}
+
+// A bad threshold must be rejected at parse time; silently treating it as
+// zero or infinity would either fire on every run or never fire at all.
+func TestParseBitrateRejects(t *testing.T) {
+	t.Parallel()
+
+	for _, in := range []string{
+		"", "   ", "abc", "Mbps", "-1", "-5Mbps", "NaN", "Inf", "+Inf", "1e999", "100Mb/s", "10 20",
+	} {
+		if got, err := parseBitrate(in); err == nil {
+			t.Errorf("parseBitrate(%q) = %v, want an error", in, got)
+		}
+	}
+}
+
+// formatBitrate output must round-trip back through parseBitrate, which is
+// what lets a user paste a printed figure in as a threshold.
+func TestParseBitrateRoundTripsFormat(t *testing.T) {
+	t.Parallel()
+
+	for _, bps := range []float64{500, 8000, 100_000_000, 2_500_000_000, 3_000_000_000_000} {
+		formatted := formatBitrate(bps)
+
+		got, err := parseBitrate(formatted)
+		if err != nil {
+			t.Fatalf("parseBitrate(formatBitrate(%v)) = %q: %v", bps, formatted, err)
+		}
+
+		if got != bps {
+			t.Errorf("round trip of %v via %q gave %v", bps, formatted, got)
+		}
+	}
+}
+
+func TestExceedsBitrate(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name  string
+		agg   []aggEntry
+		limit float64
+		want  bool
+	}{
+		{name: "no rows", agg: nil, limit: 100, want: false},
+		{name: "under", agg: []aggEntry{{Bitrate: 99}}, limit: 100, want: false},
+		{name: "exactly at limit is not exceeded", agg: []aggEntry{{Bitrate: 100}}, limit: 100, want: false},
+		{name: "over", agg: []aggEntry{{Bitrate: 101}}, limit: 100, want: true},
+		{name: "zero limit with traffic", agg: []aggEntry{{Bitrate: 1}}, limit: 0, want: true},
+		{
+			// The point of checking every row: one busy cgroup should trip the
+			// threshold even though no other group is close.
+			name:  "one grouped row over",
+			agg:   []aggEntry{{Key: "a", Bitrate: 10}, {Key: "b", Bitrate: 500}, {Key: "c", Bitrate: 20}},
+			limit: 100,
+			want:  true,
+		},
+		{
+			name:  "all grouped rows under",
+			agg:   []aggEntry{{Key: "a", Bitrate: 10}, {Key: "b", Bitrate: 20}},
+			limit: 100,
+			want:  false,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			if got := exceedsBitrate(tt.agg, tt.limit); got != tt.want {
+				t.Errorf("exceedsBitrate(%v, %v) = %v, want %v", tt.agg, tt.limit, got, tt.want)
+			}
+		})
+	}
+}
+
+// emitAggregate is where the threshold wiring lives, so cover the guard that
+// keeps it inert when --exit-over was never passed.
+//
+// Not parallel: it mutates package-level flag globals.
+func TestEmitAggregateThreshold(t *testing.T) { //nolint:paralleltest // mutates package-level flag globals
+	origExitOver, origBps, origJSON := exitOver, exitOverBps, jsonOutput
+
+	t.Cleanup(func() {
+		exitOver, exitOverBps, jsonOutput = origExitOver, origBps, origJSON
+	})
+
+	tests := []struct {
+		name     string
+		exitOver string
+		limitBps float64
+		bitrate  float64
+		want     bool
+	}{
+		{name: "flag unset stays inert even at huge bitrate", exitOver: "", limitBps: 0, bitrate: 1e12, want: false},
+		{name: "under threshold", exitOver: testThreshold, limitBps: 100_000_000, bitrate: 50_000_000, want: false},
+		{name: "over threshold", exitOver: testThreshold, limitBps: 100_000_000, bitrate: 150_000_000, want: true},
+	}
+
+	//nolint:paralleltest // subtests share mutated package-level flag globals
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			eo, jo := tt.exitOver, false
+			exitOver, exitOverBps, jsonOutput = &eo, tt.limitBps, &jo
+
+			got := emitAggregate([]aggEntry{{Bitrate: tt.bitrate, Bytes: 1, Packets: 1}})
+			if got != tt.want {
+				t.Errorf("emitAggregate threshold = %v, want %v", got, tt.want)
 			}
 		})
 	}
