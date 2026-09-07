@@ -79,10 +79,12 @@ const (
 	cgroupSkbMapFlowAppProto       = "flow_app_proto"
 	cgroupSkbMapPktCount           = "pkt_count"
 	cgroupSkbMapSockInfo           = "sock_info"
+	cgroupSkbMapTotalCount         = "total_count"
 	cgroupSkbProgCgroupSkbEgress   = "cgroup_skb_egress"
 	cgroupSkbProgCgroupSkbIngress  = "cgroup_skb_ingress"
 	cgroupSkbProgCgroupSockCreate  = "cgroup_sock_create"
 	cgroupSkbProgCgroupSockRelease = "cgroup_sock_release"
+	cgroupSkbVarAggregateOnly      = "aggregate_only"
 	cgroupSkbVarArpEnabled         = "arp_enabled"
 	cgroupSkbVarCgrpfsMagic        = "cgrpfs_magic"
 )
@@ -142,14 +144,16 @@ type cgroupSkbMapSpecs struct {
 	FlowAppProto *ebpf.MapSpec `ebpf:"flow_app_proto"`
 	PktCount     *ebpf.MapSpec `ebpf:"pkt_count"`
 	SockInfo     *ebpf.MapSpec `ebpf:"sock_info"`
+	TotalCount   *ebpf.MapSpec `ebpf:"total_count"`
 }
 
 // cgroupSkbVariableSpecs contains global variables before they are loaded into the kernel.
 //
 // It can be passed ebpf.CollectionSpec.Assign.
 type cgroupSkbVariableSpecs struct {
-	ArpEnabled  *ebpf.VariableSpec `ebpf:"arp_enabled"`
-	CgrpfsMagic *ebpf.VariableSpec `ebpf:"cgrpfs_magic"`
+	AggregateOnly *ebpf.VariableSpec `ebpf:"aggregate_only"`
+	ArpEnabled    *ebpf.VariableSpec `ebpf:"arp_enabled"`
+	CgrpfsMagic   *ebpf.VariableSpec `ebpf:"cgrpfs_magic"`
 }
 
 // cgroupSkbObjects contains all objects after they have been loaded into the kernel.
@@ -175,6 +179,7 @@ type cgroupSkbMaps struct {
 	FlowAppProto *ebpf.Map `ebpf:"flow_app_proto"`
 	PktCount     *ebpf.Map `ebpf:"pkt_count"`
 	SockInfo     *ebpf.Map `ebpf:"sock_info"`
+	TotalCount   *ebpf.Map `ebpf:"total_count"`
 }
 
 func (m *cgroupSkbMaps) Close() error {
@@ -182,6 +187,7 @@ func (m *cgroupSkbMaps) Close() error {
 		m.FlowAppProto,
 		m.PktCount,
 		m.SockInfo,
+		m.TotalCount,
 	)
 }
 
@@ -189,8 +195,9 @@ func (m *cgroupSkbMaps) Close() error {
 //
 // It can be passed to loadCgroupSkbObjects or ebpf.CollectionSpec.LoadAndAssign.
 type cgroupSkbVariables struct {
-	ArpEnabled  *ebpf.Variable `ebpf:"arp_enabled"`
-	CgrpfsMagic *ebpf.Variable `ebpf:"cgrpfs_magic"`
+	AggregateOnly *ebpf.Variable `ebpf:"aggregate_only"`
+	ArpEnabled    *ebpf.Variable `ebpf:"arp_enabled"`
+	CgrpfsMagic   *ebpf.Variable `ebpf:"cgrpfs_magic"`
 }
 
 // cgroupSkbPrograms contains all programs after they have been loaded into the kernel.

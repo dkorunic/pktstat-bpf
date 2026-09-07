@@ -274,7 +274,11 @@ func outputPlain(m []statEntry, showProcessInfo bool) string {
 // would freeze the original fd at init, which would silently mis-write if
 // anything ever swaps os.Stdout); the allocation is negligible because
 // outputJSON is invoked once per CLI run.
-func outputJSON(m []statEntry) {
+//
+// Generic over the row type so per-flow and aggregate output share one path;
+// []statEntry elements stay addressable, so the *statEntry MarshalJSON
+// override below is still selected.
+func outputJSON[T any](m []T) {
 	enc := json.NewEncoder(os.Stdout)
 	enc.SetEscapeHTML(false)
 
@@ -342,4 +346,149 @@ func bsliceToString(bs []int8) string {
 	}
 
 	return string(b)
+}
+
+// aggUnknown labels rows whose grouping field is empty (e.g. --aggregate-by
+// cgroup in TC/XDP mode, where no cgroup is attributed). Without it those rows
+// would collapse under "" and vanish from JSON via the omitempty tag, making
+// an unattributed group indistinguishable from the grand total.
+const aggUnknown = "unknown"
+
+// aggPerEntryHint is a rough per-row byte budget for the plain aggregate
+// renderer; rows are far shorter than per-flow ones (no addresses or ports).
+const aggPerEntryHint = 96
+
+// aggKeyFuncs maps an --aggregate-by name to its grouping accessor. Keeping
+// the table and the flag help text derived from the same source means a new
+// key never needs a matching edit in flags.go.
+var aggKeyFuncs = map[string]func(statEntry) string{
+	"cgroup": func(e statEntry) string { return e.CGroup },
+	"comm":   func(e statEntry) string { return e.Comm },
+	"proto":  func(e statEntry) string { return e.Proto },
+	"srcip":  func(e statEntry) string { return e.SrcIP.String() },
+	"dstip":  func(e statEntry) string { return e.DstIP.String() },
+	"pid":    func(e statEntry) string { return strconv.FormatInt(int64(e.Pid), 10) },
+}
+
+// aggregateKeys returns the valid --aggregate-by names in stable order, for
+// help text and error messages.
+func aggregateKeys() []string {
+	keys := make([]string, 0, len(aggKeyFuncs))
+	for k := range aggKeyFuncs {
+		keys = append(keys, k)
+	}
+
+	slices.Sort(keys)
+
+	return keys
+}
+
+// aggKeyFunc resolves an --aggregate-by name to its grouping function. The
+// bool reports whether the name was recognised.
+func aggKeyFunc(name string) (func(statEntry) string, bool) {
+	fn, ok := aggKeyFuncs[name]
+
+	return fn, ok
+}
+
+// aggregateStats collapses per-flow rows into aggregate rows. A nil keyOf
+// produces exactly one grand-total row, including for empty input — a
+// threshold script wants {"bytes":0} rather than an empty array when the
+// capture window saw no traffic. A non-nil keyOf produces one row per distinct
+// key, sorted by bytes descending with the key as tie-break so output is
+// deterministic despite Go's randomised map iteration order.
+//
+// Bitrate is summed rather than recomputed: addStats divides by the same run
+// duration for every row, so sum(8*bytes_i/dur) is exactly 8*sum(bytes_i)/dur
+// and we avoid plumbing the duration down here. That identity breaks the day
+// duration becomes per-row — recompute from Bytes if that ever changes.
+func aggregateStats(stats []statEntry, keyOf func(statEntry) string) []aggEntry {
+	if keyOf == nil {
+		var (
+			total aggEntry
+			flows uint64
+		)
+
+		for i := range stats {
+			total.Bytes += stats[i].Bytes
+			total.Packets += stats[i].Packets
+			total.Bitrate += stats[i].Bitrate
+			flows++
+		}
+
+		total.Flows = &flows
+
+		return []aggEntry{total}
+	}
+
+	byKey := make(map[string]*aggEntry)
+
+	for i := range stats {
+		key := keyOf(stats[i])
+		if key == "" {
+			key = aggUnknown
+		}
+
+		e, ok := byKey[key]
+		if !ok {
+			e = &aggEntry{Key: key, Flows: new(uint64)}
+			byKey[key] = e
+		}
+
+		e.Bytes += stats[i].Bytes
+		e.Packets += stats[i].Packets
+		e.Bitrate += stats[i].Bitrate
+		*e.Flows++
+	}
+
+	out := make([]aggEntry, 0, len(byKey))
+	for _, e := range byKey {
+		out = append(out, *e)
+	}
+
+	slices.SortFunc(out, func(a, b aggEntry) int {
+		// Bytes rather than Bitrate: identical ordering (shared duration), but
+		// an integer compare sidesteps any float NaN ordering concern.
+		if c := cmp.Compare(b.Bytes, a.Bytes); c != 0 {
+			return c
+		}
+
+		return strings.Compare(a.Key, b.Key)
+	})
+
+	return out
+}
+
+// outputAggPlain formats aggregate rows as plain text, mirroring the field
+// order and separators of outputPlain so existing line-oriented parsers need
+// no new grammar.
+func outputAggPlain(m []aggEntry) string {
+	var sb strings.Builder
+
+	sb.Grow(len(m) * aggPerEntryHint)
+
+	for _, v := range m {
+		if v.Key != "" {
+			sb.WriteString("key: ")
+			sb.WriteString(v.Key)
+			sb.WriteString(", ")
+		}
+
+		sb.WriteString("bitrate: ")
+		sb.WriteString(formatBitrate(v.Bitrate))
+		sb.WriteString(", packets: ")
+		sb.WriteString(strconv.FormatUint(v.Packets, 10))
+		sb.WriteString(", bytes: ")
+		sb.WriteString(strconv.FormatUint(v.Bytes, 10))
+
+		// Absent in totals-only mode, where per-flow rows are never read.
+		if v.Flows != nil {
+			sb.WriteString(", flows: ")
+			sb.WriteString(strconv.FormatUint(*v.Flows, 10))
+		}
+
+		sb.WriteByte('\n')
+	}
+
+	return sb.String()
 }

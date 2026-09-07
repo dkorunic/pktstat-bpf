@@ -72,7 +72,9 @@ type xdpStatvalue struct {
 const (
 	xdpMapFlowAppProto     = "flow_app_proto"
 	xdpMapPktCount         = "pkt_count"
+	xdpMapTotalCount       = "total_count"
 	xdpProgXdpCountPackets = "xdp_count_packets"
+	xdpVarAggregateOnly    = "aggregate_only"
 	xdpVarArpEnabled       = "arp_enabled"
 )
 
@@ -127,13 +129,15 @@ type xdpProgramSpecs struct {
 type xdpMapSpecs struct {
 	FlowAppProto *ebpf.MapSpec `ebpf:"flow_app_proto"`
 	PktCount     *ebpf.MapSpec `ebpf:"pkt_count"`
+	TotalCount   *ebpf.MapSpec `ebpf:"total_count"`
 }
 
 // xdpVariableSpecs contains global variables before they are loaded into the kernel.
 //
 // It can be passed ebpf.CollectionSpec.Assign.
 type xdpVariableSpecs struct {
-	ArpEnabled *ebpf.VariableSpec `ebpf:"arp_enabled"`
+	AggregateOnly *ebpf.VariableSpec `ebpf:"aggregate_only"`
+	ArpEnabled    *ebpf.VariableSpec `ebpf:"arp_enabled"`
 }
 
 // xdpObjects contains all objects after they have been loaded into the kernel.
@@ -158,12 +162,14 @@ func (o *xdpObjects) Close() error {
 type xdpMaps struct {
 	FlowAppProto *ebpf.Map `ebpf:"flow_app_proto"`
 	PktCount     *ebpf.Map `ebpf:"pkt_count"`
+	TotalCount   *ebpf.Map `ebpf:"total_count"`
 }
 
 func (m *xdpMaps) Close() error {
 	return _XdpClose(
 		m.FlowAppProto,
 		m.PktCount,
+		m.TotalCount,
 	)
 }
 
@@ -171,7 +177,8 @@ func (m *xdpMaps) Close() error {
 //
 // It can be passed to loadXdpObjects or ebpf.CollectionSpec.LoadAndAssign.
 type xdpVariables struct {
-	ArpEnabled *ebpf.Variable `ebpf:"arp_enabled"`
+	AggregateOnly *ebpf.Variable `ebpf:"aggregate_only"`
+	ArpEnabled    *ebpf.Variable `ebpf:"arp_enabled"`
 }
 
 // xdpPrograms contains all programs after they have been loaded into the kernel.

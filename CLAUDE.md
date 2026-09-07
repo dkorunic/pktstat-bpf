@@ -28,9 +28,12 @@ GOTMPDIR=/root/tmp go test ./...                       # run all Go unit tests
 GOTMPDIR=/root/tmp go test -run TestOSPFTypeName ./... # run a single test
 ```
 
-Tests live in three files:
+Tests live in six files:
 - `helpers_test.go` — protocol decoder helpers (`ospfTypeName`, `arpOpName`, `greInnerName`).
-- `output_test.go` — `outputPlain` / `MarshalJSON` formatting for protocols that pack metadata into port fields (ESP/AH SPI, ARP opcode, OSPF type/version, GRE inner protocol/flags). Has an `init()` that pre-points `useKProbes` and `useCGroup` to false/empty so `outputPlain` doesn't deref nil flag pointers.
+- `main_test.go` — load-time spec patching (`applyMaxEntries`, `applyArpEnabled`, `applyCgrpfsMagic`, `applyAggregateOnly`) and BPF map shape assertions. These parse the embedded ELF via the `load*` functions, so they run on any OS without a kernel.
+- `map_test.go` — per-CPU collapse, flowkey derivation, and L7 reconciliation.
+- `cgroup_test.go` — cgroup path cache behaviour.
+- `output_test.go` — `outputPlain` / `MarshalJSON` formatting for protocols that pack metadata into port fields (ESP/AH SPI, ARP opcode, OSPF type/version, GRE inner protocol/flags), plus `aggregateStats` / `outputAggPlain` coverage for `--aggregate`. There is no flag-init shim: `outputPlain` takes `showProcessInfo` as a parameter rather than reading the flag globals, so it needs no package state. Tests that *do* mutate flag globals (`TestAggregateTotalsOnly`) save and restore them and skip `t.Parallel`.
 - `sniff_test.go` — `sniffAppProtoGo`, a byte-for-byte Go mirror of the BPF `sniff_app_proto` C function. `TestSniffAppProtoPositives` / `TestSniffAppProtoNegatives` validate L7 signature matching. Any change to the BPF sniffer must be reflected here.
 
 The eBPF C code has no Go-side tests — it is validated only by the kernel verifier at load time.
@@ -68,10 +71,12 @@ pktstat-bpf is a Linux eBPF packet statistics tool with two layers:
 - **Per-CPU read collapse**. `pkt_count` is `BPF_MAP_TYPE_LRU_PERCPU_HASH`: every lookup returns `possibleCPUs` slots. `sumPerCPUValue` aggregates them — don't read raw slots into a scalar without summing.
 - **L7 detection dual implementation**. `sniff_app_proto` in `bpf/counter_common.h` and `sniffAppProtoGo` in `sniff_test.go` must remain byte-identical. The BPF path (TC/XDP) uses `detect_and_cache_l7` with direct packet access; the KProbe path uses `detect_and_cache_l7_skb` + `bpf_probe_read_kernel`. Both write to `flow_app_proto` under `BPF_NOEXIST` — concurrent writers for the same flow always produce the same value so races are harmless.
 - **flow_app_proto map**. `BPF_MAP_TYPE_LRU_HASH` (non-per-CPU), keyed by `tcFlowkey` (5-tuple: srcip/dstip/src_port/dst_port/proto + 3-byte explicit pad). `applyMaxEntries` patches it alongside `pkt_count` and `sock_info`. In KProbes mode, L7 is cached from either the send (`ip_local_out`) or receive (`ip_rcv`) path; `addStats` in `map.go` tries the reverse-direction key on a miss to reconcile this.
+- **total_count map**. `BPF_MAP_TYPE_PERCPU_ARRAY`, exactly one entry, bumped unconditionally in `update_val`. Being an array it can never evict, so it is the only counter whose byte total stays exact while `pkt_count` (LRU) is shedding entries under flow churn — that eviction undercount is the reason it exists. `applyMaxEntries` deliberately does **not** resize it. Read by `readTotals` in `map.go` with a single `Lookup`, summed across CPUs like `pkt_count`.
 - **Load-time BPF variable patching**. Before `LoadAndAssign`, `main.go` rewrites BPF `volatile const` globals via `spec.Variables[...]`:
   - `applyCgrpfsMagic` — selects cgroup-v1 vs v2 code path; verifier folds the unused branch.
   - `applyMaxEntries` — overrides `pkt_count`, `sock_info`, and `flow_app_proto` map sizes from `--max-entries`.
   - `applyArpEnabled` — disables ARP capture in TC/XDP when `--no-arp` is set.
+  - `applyAggregateOnly` — set by `--aggregate` (grand total only). Folds away every per-flow write: the `pkt_count` hash update, `detect_and_cache_l7`, `detect_and_cache_l7_skb`, and `sniff_tcp_skb`. **Not** applied for `--aggregate-by`, which needs the per-flow rows to group by and therefore keeps the normal capture path — see `aggregateTotalsOnly()`.
 - **Mode precedence**. When multiple capture-mode flags are passed, `main.go`'s switch picks the first match in order `--cgroup > --kprobes > --xdp > TC (default)` and logs a warning; it does not error.
 
 ## Capture Modes
@@ -85,14 +90,15 @@ Four mutually-exclusive modes selected at runtime:
 | `--kprobes` | KProbes + PID/CGroup tracking | ≥4.10 + BTF |
 | `--cgroup <path>` | CGroup SKB + PID tracking | ≥4.10 + BTF |
 
-Notable runtime knobs: `--xdp_mode {auto,generic,native,offload}`, `--max-entries N` (overrides BPF map size), `--no-arp` (skips ARP dispatch in TC/XDP), `--tui` / `-g` (interactive), `--json`, `--timeout`, `--refresh`.
+Notable runtime knobs: `--xdp_mode {auto,generic,native,offload}`, `--max-entries N` (overrides BPF map size), `--no-arp` (skips ARP dispatch in TC/XDP), `--aggregate` / `-a` and `--aggregate-by KEY` (totals instead of per-flow rows), `--tui` / `-g` (interactive), `--json`, `--timeout`, `--refresh`.
 
 ## Code Style & Tooling
 
 - **Formatter chain**: `gci` (import grouping) → `gofumpt` (strict gofmt) → `betteralign` (struct field alignment). Run `task fmt` before committing.
-- **Linter**: `golangci-lint` v2 with `default: all` minus the linters listed in `.golangci.yml` (cyclop, depguard, dupl, exhaustruct, forbidigo, funlen, gochecknoglobals, gocognit, lll, varnamelen, wrapcheck). Run `task lint`. The branch carries ~32 pre-existing lint warnings that are not expected to grow.
+- **Linter**: `golangci-lint` v2 with `default: all` minus the linters listed in `.golangci.yml` (cyclop, depguard, dupl, exhaustruct, exhaustruct_v5, forbidigo, funlen, gochecknoglobals, gocognit, lll, varnamelen, wrapcheck). Run `task lint`. The branch carries ~53 pre-existing warnings that are not expected to grow — measure the delta by stashing your changes and re-running rather than trusting this number. `exhaustruct_v5` is disabled alongside `exhaustruct`: they are the same check, and `default: all` re-enables the v5 name on linter upgrades unless it is listed explicitly.
 - **No CGO** in production builds (`CGO_ENABLED=0`, set in `Taskfile.yml`). CGO is only re-enabled for `task build-debug` (race detector).
-- **eBPF code generation**: only needed when changing `bpf/*.c` or `bpf/*.h`. Requires `clang` and the arch-specific BTF headers under `contrib/{amd64,arm64}/vmlinux.h` (gitignored locally — fetch or symlink before running `task generate`). After regeneration, commit both `*_bpfel.go` and `*_bpfel.o` for both architectures.
+- **eBPF code generation**: only needed when changing `bpf/*.c` or `bpf/*.h`. Requires a `clang` with a BPF backend, `llvm-strip` on `PATH`, the libbpf headers (`bpf/bpf_helpers.h`, `bpf/bpf_core_read.h`, …), and the arch-specific BTF headers under `contrib/{amd64,arm64}/vmlinux.h` — the latter are **committed to the repo**, not gitignored. After regeneration, commit both `*_bpfel.go` and `*_bpfel.o` for both architectures.
+- **Regenerate on Linux.** Apple clang has no BPF backend, and a substitute header set produces objects that differ from the canonical ones even with no source change (verified: an unmodified rebuild shifted `tc_x86_bpfel.o` by 224 bytes, and altered `cgroup_*.o` whose source never changed). The `*_bpfel.go` bindings are byte-stable across toolchains, but the `.o` blobs are not — and nothing validates them until the kernel verifier loads them, so build them where you can actually run them.
 - **Modernize**: `task modernize` runs the gopls modernize analyzer with `-fix -test`.
 - **`task fmt-bpf` is broken** on machines with clang-format < v15 (the `.clang-format` file uses v15+ subfield syntax). Skip it; `task generate` and `task build` are the meaningful validation gates for BPF C changes.
 

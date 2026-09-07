@@ -72,6 +72,7 @@ type kprobeStatvalue struct {
 const (
 	kprobeMapFlowAppProto      = "flow_app_proto"
 	kprobeMapPktCount          = "pkt_count"
+	kprobeMapTotalCount        = "total_count"
 	kprobeProgIcmpSend         = "__icmp_send"
 	kprobeProgIcmp6Send        = "icmp6_send"
 	kprobeProgIcmpRcv          = "icmp_rcv"
@@ -86,6 +87,7 @@ const (
 	kprobeProgTcpCleanupRbuf   = "tcp_cleanup_rbuf"
 	kprobeProgTcpRetransmitSkb = "tcp_retransmit_skb"
 	kprobeProgTcpSendmsg       = "tcp_sendmsg"
+	kprobeVarAggregateOnly     = "aggregate_only"
 	kprobeVarArpEnabled        = "arp_enabled"
 	kprobeVarCgrpfsMagic       = "cgrpfs_magic"
 )
@@ -154,14 +156,16 @@ type kprobeProgramSpecs struct {
 type kprobeMapSpecs struct {
 	FlowAppProto *ebpf.MapSpec `ebpf:"flow_app_proto"`
 	PktCount     *ebpf.MapSpec `ebpf:"pkt_count"`
+	TotalCount   *ebpf.MapSpec `ebpf:"total_count"`
 }
 
 // kprobeVariableSpecs contains global variables before they are loaded into the kernel.
 //
 // It can be passed ebpf.CollectionSpec.Assign.
 type kprobeVariableSpecs struct {
-	ArpEnabled  *ebpf.VariableSpec `ebpf:"arp_enabled"`
-	CgrpfsMagic *ebpf.VariableSpec `ebpf:"cgrpfs_magic"`
+	AggregateOnly *ebpf.VariableSpec `ebpf:"aggregate_only"`
+	ArpEnabled    *ebpf.VariableSpec `ebpf:"arp_enabled"`
+	CgrpfsMagic   *ebpf.VariableSpec `ebpf:"cgrpfs_magic"`
 }
 
 // kprobeObjects contains all objects after they have been loaded into the kernel.
@@ -186,12 +190,14 @@ func (o *kprobeObjects) Close() error {
 type kprobeMaps struct {
 	FlowAppProto *ebpf.Map `ebpf:"flow_app_proto"`
 	PktCount     *ebpf.Map `ebpf:"pkt_count"`
+	TotalCount   *ebpf.Map `ebpf:"total_count"`
 }
 
 func (m *kprobeMaps) Close() error {
 	return _KprobeClose(
 		m.FlowAppProto,
 		m.PktCount,
+		m.TotalCount,
 	)
 }
 
@@ -199,8 +205,9 @@ func (m *kprobeMaps) Close() error {
 //
 // It can be passed to loadKprobeObjects or ebpf.CollectionSpec.LoadAndAssign.
 type kprobeVariables struct {
-	ArpEnabled  *ebpf.Variable `ebpf:"arp_enabled"`
-	CgrpfsMagic *ebpf.Variable `ebpf:"cgrpfs_magic"`
+	AggregateOnly *ebpf.Variable `ebpf:"aggregate_only"`
+	ArpEnabled    *ebpf.Variable `ebpf:"arp_enabled"`
+	CgrpfsMagic   *ebpf.Variable `ebpf:"cgrpfs_magic"`
 }
 
 // kprobePrograms contains all programs after they have been loaded into the kernel.

@@ -72,7 +72,9 @@ type tcStatvalue struct {
 const (
 	tcMapFlowAppProto    = "flow_app_proto"
 	tcMapPktCount        = "pkt_count"
+	tcMapTotalCount      = "total_count"
 	tcProgTcCountPackets = "tc_count_packets"
+	tcVarAggregateOnly   = "aggregate_only"
 	tcVarArpEnabled      = "arp_enabled"
 )
 
@@ -127,13 +129,15 @@ type tcProgramSpecs struct {
 type tcMapSpecs struct {
 	FlowAppProto *ebpf.MapSpec `ebpf:"flow_app_proto"`
 	PktCount     *ebpf.MapSpec `ebpf:"pkt_count"`
+	TotalCount   *ebpf.MapSpec `ebpf:"total_count"`
 }
 
 // tcVariableSpecs contains global variables before they are loaded into the kernel.
 //
 // It can be passed ebpf.CollectionSpec.Assign.
 type tcVariableSpecs struct {
-	ArpEnabled *ebpf.VariableSpec `ebpf:"arp_enabled"`
+	AggregateOnly *ebpf.VariableSpec `ebpf:"aggregate_only"`
+	ArpEnabled    *ebpf.VariableSpec `ebpf:"arp_enabled"`
 }
 
 // tcObjects contains all objects after they have been loaded into the kernel.
@@ -158,12 +162,14 @@ func (o *tcObjects) Close() error {
 type tcMaps struct {
 	FlowAppProto *ebpf.Map `ebpf:"flow_app_proto"`
 	PktCount     *ebpf.Map `ebpf:"pkt_count"`
+	TotalCount   *ebpf.Map `ebpf:"total_count"`
 }
 
 func (m *tcMaps) Close() error {
 	return _TcClose(
 		m.FlowAppProto,
 		m.PktCount,
+		m.TotalCount,
 	)
 }
 
@@ -171,7 +177,8 @@ func (m *tcMaps) Close() error {
 //
 // It can be passed to loadTcObjects or ebpf.CollectionSpec.LoadAndAssign.
 type tcVariables struct {
-	ArpEnabled *ebpf.Variable `ebpf:"arp_enabled"`
+	AggregateOnly *ebpf.Variable `ebpf:"aggregate_only"`
+	ArpEnabled    *ebpf.Variable `ebpf:"arp_enabled"`
 }
 
 // tcPrograms contains all programs after they have been loaded into the kernel.

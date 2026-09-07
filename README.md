@@ -207,19 +207,21 @@ NAME
   pktstat-bpf
 
 FLAGS
-  -?, --help               display help
-  -j, --json               if true, output in JSON format
-  -c, --cgroup STRING      the path to a CGroup V2 to measure statistics on
-  -x, --xdp                if true, use XDP instead of TC (this disables egress statistics)
-  -k, --kprobes            if true, use KProbes for per-process TCP/UDP statistics
-  -g, --tui                if true, enable TUI
-      --version            display program version
-  -i, --iface STRING       interface to read from (default: eth0)
-      --xdp_mode STRING    XDP attach mode (auto, generic, native or offload; native and offload require NIC driver support) (default: auto)
-  -r, --refresh DURATION   refresh interval in TUI (default: 1s)
-  -t, --timeout DURATION   timeout for packet capture in CLI (default: 10m0s)
-      --max-entries UINT   override pkt_count map max_entries (0 = compile-time default) (default: 0)
-      --no-arp             disable ARP capture in TC/XDP modes (skips parse_arp dispatch)
+  -?, --help                  display help
+  -j, --json                  if true, output in JSON format
+  -c, --cgroup STRING         the path to a CGroup V2 to measure statistics on
+  -x, --xdp                   if true, use XDP instead of TC (this disables egress statistics)
+  -k, --kprobes               if true, use KProbes for per-process TCP/UDP statistics
+  -g, --tui                   if true, enable TUI
+      --version               display program version
+  -i, --iface STRING          interface to read from (default: eth0)
+      --xdp_mode STRING       XDP attach mode (auto, generic, native or offload; native and offload require NIC driver support) (default: auto)
+  -r, --refresh DURATION      refresh interval in TUI (default: 1s)
+  -t, --timeout DURATION      timeout for packet capture in CLI (default: 10m0s)
+      --max-entries UINT      override pkt_count map max_entries (0 = compile-time default) (default: 0)
+      --no-arp                disable ARP capture in TC/XDP modes (skips parse_arp dispatch)
+  -a, --aggregate             if true, output aggregate totals instead of per-flow rows
+      --aggregate-by STRING   aggregate grouped by a key (implies --aggregate); one of: cgroup, comm, dstip, pid, proto, srcip
 ```
 
 Use `--iface` to specify the network interface to capture on.
@@ -253,6 +255,50 @@ Use `--iface` to specify the network interface to capture on.
 `--max-entries <n>` overrides the compile-time default `MaxEntries` for all sized BPF maps: `pkt_count` (per-flow counters), `flow_app_proto` (L7 labels), and `sock_info` (PID attribution in cgroup mode). A value of `0` keeps the default. Increase it on very busy systems where flow cardinality exceeds the default and you observe truncated output.
 
 `--no-arp` disables ARP capture in TC and XDP modes. ARP is enabled by default; pass this flag to skip the `parse_arp` dispatch entirely (e.g. on hosts where ARP traffic is noise). The flag is a no-op in KProbes and cgroup modes, which do not see ARP.
+
+### Aggregate output
+
+`--aggregate` (`-a`) replaces the per-flow rows with a single total, which is what a monitoring script wants when it only needs to compare bandwidth against a threshold:
+
+```shell
+# Did this cgroup exceed a threshold over the last 5 seconds?
+pktstat-bpf --cgroup /sys/fs/cgroup/mygroup --timeout 5s --aggregate --json
+```
+
+```json
+[{ "bytes": 12345678, "packets": 4711, "bitrate": 19753084.8 }]
+```
+
+Output is always a JSON **array**, so `jq '.[0].bytes'` works whether or not you group. In plain mode the same run prints one line:
+
+```
+bitrate: 19.75 Mbps, packets: 4711, bytes: 12345678
+```
+
+`--aggregate` is more than a convenience wrapper around `awk`. It flips a load-time constant that makes the verifier fold away every per-flow write, so the eBPF programs stop updating the `pkt_count` hash and stop running the L7 sniffer altogether, and counting collapses to a single per-CPU array increment. That has two consequences:
+
+- **It is faster.** Per-packet work drops to a header parse plus one array index, and reading the result costs one lookup instead of a full walk of up to `--max-entries` map entries.
+- **It is more accurate.** `pkt_count` is an LRU map: under heavy flow churn it evicts entries and their byte counters are lost. Summing that map in userspace therefore *undercounts* exactly when traffic is heaviest — the case a threshold check exists to catch. The aggregate counter is a fixed-size array that can never evict, so its byte count is exact.
+
+Because no per-flow rows are materialised, a `--aggregate` total reports no `flows` field at all — the count is unknown rather than zero.
+
+`--aggregate-by <key>` groups the totals instead of collapsing them completely, by `cgroup`, `comm`, `pid`, `proto`, `srcip`, or `dstip`. It implies `--aggregate`:
+
+```shell
+pktstat-bpf --kprobes --timeout 5s --aggregate-by comm
+```
+
+```
+key: curl, bitrate: 6.00 Kbps, packets: 7, bytes: 750, flows: 2
+key: dig, bitrate: 2.00 Kbps, packets: 3, bytes: 250, flows: 1
+```
+
+Grouping needs the per-flow rows to attribute traffic, so `--aggregate-by` keeps the normal capture path and sums in userspace. It therefore carries the same LRU caveat as regular output, and it *does* report `flows`. Rows whose grouping field is empty — for example `--aggregate-by cgroup` in TC or XDP mode, which have no cgroup attribution — are collected under the key `unknown`.
+
+Both forms are CLI-only; `--aggregate` is ignored with `--tui`.
+
+> [!NOTE]
+> Which capture mode you pick changes what the total *means*. `--cgroup` counts `skb->len`, closest to real bandwidth. `--kprobes` counts payload bytes handed down from userspace at hooks like `tcp_sendmsg`, which is not the same as wire bytes. For bandwidth threshold checks against a cgroup, prefer `--cgroup`. See [Byte and packet accounting](#byte-and-packet-accounting).
 
 ## Star History
 

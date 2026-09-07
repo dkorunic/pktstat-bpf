@@ -7,6 +7,7 @@ package main
 
 import (
 	"testing"
+	"time"
 
 	"github.com/cilium/ebpf"
 )
@@ -30,6 +31,25 @@ func withFlags(t *testing.T, maxEnt uint, noArpFlag bool) {
 	n := noArpFlag
 	maxEntries = &m
 	noARP = &n
+}
+
+// withAggregate swaps the aggregation flag state for the duration of the test,
+// mirroring withFlags. keyFn nil means a grand total (the BPF fast path);
+// non-nil means --aggregate-by, which must stay on the per-flow path.
+func withAggregate(t *testing.T, on bool, keyFn func(statEntry) string) {
+	t.Helper()
+
+	savedAggregate := aggregate
+	savedKeyFn := aggregateKeyFn
+
+	t.Cleanup(func() {
+		aggregate = savedAggregate
+		aggregateKeyFn = savedKeyFn
+	})
+
+	a := on
+	aggregate = &a
+	aggregateKeyFn = keyFn
 }
 
 func TestApplyMaxEntriesPatchesTCMaps(t *testing.T) { //nolint:paralleltest // mutates package-level flag globals
@@ -241,5 +261,158 @@ func TestEmbeddedSpecsLoadable(t *testing.T) {
 		if spec == nil {
 			t.Errorf("%s loader returned nil spec", c.name)
 		}
+	}
+}
+
+// The counter programs must all expose total_count as a 1-entry per-CPU array.
+// An LRU hash here would silently reintroduce the eviction undercount that the
+// map exists to avoid, so assert the type explicitly.
+func TestTotalCountMapShape(t *testing.T) {
+	t.Parallel()
+
+	cases := []struct {
+		name   string
+		loader func() (*ebpf.CollectionSpec, error)
+	}{
+		{"tc", loadTc},
+		{"xdp", loadXdp},
+		{"kprobe", loadKprobe},
+		{"cgroupSkb", loadCgroupSkb},
+	}
+
+	for _, c := range cases {
+		spec, err := c.loader()
+		if err != nil {
+			t.Fatalf("%s loader failed: %v", c.name, err)
+		}
+
+		m, ok := spec.Maps["total_count"]
+		if !ok {
+			t.Errorf("%s: total_count map missing", c.name)
+
+			continue
+		}
+
+		if m.Type != ebpf.PerCPUArray {
+			t.Errorf("%s: total_count type = %v, want PerCPUArray", c.name, m.Type)
+		}
+
+		if m.MaxEntries != 1 {
+			t.Errorf("%s: total_count MaxEntries = %d, want 1", c.name, m.MaxEntries)
+		}
+	}
+}
+
+// --max-entries sizes the per-flow maps; total_count is a fixed single slot
+// and must not be swept up by that patch.
+func TestApplyMaxEntriesLeavesTotalCount(t *testing.T) { //nolint:paralleltest // mutates package-level flag globals
+	withFlags(t, 16384, false)
+
+	spec, err := loadTc()
+	if err != nil {
+		t.Fatalf("loadTc: %v", err)
+	}
+
+	applyMaxEntries(spec)
+
+	if got := spec.Maps["total_count"].MaxEntries; got != 1 {
+		t.Errorf("total_count MaxEntries = %d, want 1 (unaffected by --max-entries)", got)
+	}
+}
+
+func TestApplyAggregateOnlyTotals(t *testing.T) { //nolint:paralleltest // mutates package-level flag globals
+	withAggregate(t, true, nil)
+
+	spec, err := loadTc()
+	if err != nil {
+		t.Fatalf("loadTc: %v", err)
+	}
+
+	applyAggregateOnly(spec)
+
+	v, ok := spec.Variables["aggregate_only"]
+	if !ok {
+		t.Fatal("aggregate_only variable missing from TC spec")
+	}
+
+	var got uint8
+	if err := v.Get(&got); err != nil {
+		t.Fatalf("variable Get: %v", err)
+	}
+
+	if got != 1 {
+		t.Errorf("aggregate_only = %d, want 1 under --aggregate", got)
+	}
+}
+
+// --aggregate-by needs the per-flow rows, so it must leave the per-flow write
+// path enabled even though *aggregate is set.
+func TestApplyAggregateOnlyGroupedLeavesDefault(t *testing.T) { //nolint:paralleltest // mutates package-level flag globals
+	keyFn, ok := aggKeyFunc("proto")
+	if !ok {
+		t.Fatal("aggKeyFunc(proto) not found")
+	}
+
+	withAggregate(t, true, keyFn)
+
+	spec, err := loadTc()
+	if err != nil {
+		t.Fatalf("loadTc: %v", err)
+	}
+
+	applyAggregateOnly(spec)
+
+	var got uint8
+	if err := spec.Variables["aggregate_only"].Get(&got); err != nil {
+		t.Fatalf("variable Get: %v", err)
+	}
+
+	if got != 0 {
+		t.Errorf("aggregate_only = %d, want 0 under --aggregate-by", got)
+	}
+}
+
+func TestApplyAggregateOnlyOffLeavesDefault(t *testing.T) { //nolint:paralleltest // mutates package-level flag globals
+	withAggregate(t, false, nil)
+
+	spec, err := loadTc()
+	if err != nil {
+		t.Fatalf("loadTc: %v", err)
+	}
+
+	applyAggregateOnly(spec)
+
+	var got uint8
+	if err := spec.Variables["aggregate_only"].Get(&got); err != nil {
+		t.Fatalf("variable Get: %v", err)
+	}
+
+	if got != 0 {
+		t.Errorf("aggregate_only = %d, want 0 (BPF default)", got)
+	}
+}
+
+// The cgroup_mkdir tracer does not include counter_common.h; the patcher must
+// no-op rather than panic on a spec without the variable.
+func TestApplyAggregateOnlyMissingVariableIsNoOp(t *testing.T) { //nolint:paralleltest // mutates package-level flag globals
+	withAggregate(t, true, nil)
+
+	spec, err := loadCgroup()
+	if err != nil {
+		t.Fatalf("loadCgroup: %v", err)
+	}
+
+	if _, ok := spec.Variables["aggregate_only"]; ok {
+		t.Fatal("cgroup spec unexpectedly exposes aggregate_only")
+	}
+
+	applyAggregateOnly(spec)
+}
+
+func TestReadTotalsNilMap(t *testing.T) {
+	t.Parallel()
+
+	if _, err := readTotals(nil, time.Now()); err == nil {
+		t.Error("readTotals(nil) must return an error, not a zero row")
 	}
 }

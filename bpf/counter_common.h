@@ -34,6 +34,23 @@ struct {
   __type(value, statvalue);
 } pkt_count SEC(".maps");
 
+// Grand totals: a single per-CPU slot pair, summed by userspace like
+// pkt_count. Deliberately an ARRAY rather than an LRU hash — it can never
+// evict, so --aggregate reports the true byte count even while flow churn is
+// evicting per-flow rows out of pkt_count.
+struct {
+  __uint(type, BPF_MAP_TYPE_PERCPU_ARRAY);
+  __uint(max_entries, 1);
+  __type(key, __u32);
+  __type(value, statvalue);
+} total_count SEC(".maps");
+
+// Patched at load time from --aggregate (grand total only; --aggregate-by
+// still needs the per-flow rows). When set, the verifier folds away every
+// per-flow write — the pkt_count hash update and the L7 sniffer — leaving
+// just the total_count bump.
+volatile const __u8 aggregate_only = 0;
+
 // 5-tuple flow key (no PID/cgroup — flow-scoped). Explicit pad keeps layout stable.
 typedef struct flowkey_t {
   struct in6_addr srcip;
@@ -269,6 +286,13 @@ sniff_app_proto(const __u8 *buf, __u32 peek_len, __u8 l4_proto) {
 static inline __attribute__((always_inline)) void
 detect_and_cache_l7(void *transport, void *data_end,
                     __u8 l4_proto, __u32 l4_hdr_len, const statkey *key) {
+  // Folded at load time under --aggregate: L7 sniffing is per-flow state that
+  // a grand total never reads, and it is the more expensive half of the
+  // per-packet work (a map lookup plus a byte-pattern match).
+  if (aggregate_only) {
+    return;
+  }
+
   flowkey fk = {};
   fk.srcip = key->srcip;
   fk.dstip = key->dstip;
@@ -310,6 +334,10 @@ detect_and_cache_l7(void *transport, void *data_end,
 static __attribute__((noinline)) void
 detect_and_cache_l7_skb(struct sk_buff *skb, __u32 payload_off,
                         const statkey *key) {
+  if (aggregate_only) {
+    return;
+  }
+
   flowkey fk = {};
   fk.srcip = key->srcip;
   fk.dstip = key->dstip;
@@ -436,6 +464,13 @@ extract_tcp_flowkey_skb(struct sk_buff *skb, statkey *key) {
 // immediately for non-TCP or non-IP skbs.
 static inline __attribute__((always_inline)) void
 sniff_tcp_skb(struct sk_buff *skb) {
+  // Gated here rather than only in detect_and_cache_l7_skb so that
+  // extract_tcp_flowkey_skb — a noinline sub-program doing a dozen
+  // BPF_CORE_READs — is skipped as well under --aggregate.
+  if (aggregate_only) {
+    return;
+  }
+
   statkey key;
   __builtin_memset(&key, 0, sizeof(key));
 
@@ -659,6 +694,23 @@ process_ip6(struct ipv6hdr *ip6, void *data_end, statkey *key) {
 
 static inline __attribute__((always_inline)) void update_val(statkey *key,
                                                              size_t size) {
+  // Grand total first: unconditional and eviction-proof. A PERCPU_ARRAY
+  // lookup is a bounds check plus pointer arithmetic — no hashing — so the
+  // cost in normal mode is noise, and keeping it always-on means the totals
+  // are available without a second capture run.
+  __u32 zero = 0;
+  statvalue *tot = (statvalue *)bpf_map_lookup_elem(&total_count, &zero);
+  // Cannot miss on a 1-entry array, but the verifier still demands the check.
+  if (likely(tot)) {
+    tot->packets += 1;
+    tot->bytes += size;
+  }
+
+  // Folded at load time: --aggregate skips the per-flow LRU hash entirely.
+  if (aggregate_only) {
+    return;
+  }
+
   // LRU_PERCPU_HASH: `val` is this CPU's slot. Plain stores are race-free.
   statvalue *val = (statvalue *)bpf_map_lookup_elem(&pkt_count, key);
   if (likely(val)) {

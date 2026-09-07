@@ -7,7 +7,9 @@ package main
 
 import (
 	"fmt"
+	"log"
 	"os"
+	"strings"
 	"time"
 
 	"github.com/cilium/ebpf/link"
@@ -24,11 +26,12 @@ const (
 )
 
 var (
-	ifname, xdpMode, useCGroup                                      *string
-	jsonOutput, version, help, useXDP, useKProbes, enableTUI, noARP *bool
-	timeout, refresh                                                *time.Duration
-	maxEntries                                                      *uint
-	xdpAttachFlags                                                  link.XDPAttachFlags
+	ifname, xdpMode, useCGroup, aggregateBy                                    *string
+	jsonOutput, version, help, useXDP, useKProbes, enableTUI, noARP, aggregate *bool
+	timeout, refresh                                                           *time.Duration
+	maxEntries                                                                 *uint
+	xdpAttachFlags                                                             link.XDPAttachFlags
+	aggregateKeyFn                                                             func(statEntry) string
 )
 
 func parseFlags() {
@@ -51,6 +54,10 @@ func parseFlags() {
 
 	maxEntries = fs.UintLong("max-entries", 0, "override pkt_count map max_entries (0 = compile-time default)")
 	noARP = fs.BoolLong("no-arp", "disable ARP capture in TC/XDP modes (skips parse_arp dispatch)")
+
+	aggregate = fs.Bool('a', "aggregate", "if true, output aggregate totals instead of per-flow rows")
+	aggregateBy = fs.StringLong("aggregate-by", "",
+		"aggregate grouped by a key (implies --aggregate); one of: "+strings.Join(aggregateKeys(), ", "))
 
 	var err error
 
@@ -91,7 +98,28 @@ func parseFlags() {
 		os.Exit(1)
 	}
 
+	// --aggregate-by implies --aggregate; resolving here keeps main() free of
+	// flag validation and fails fast on a typo rather than silently totalling.
+	if *aggregateBy != "" {
+		*aggregate = true
+
+		var ok bool
+		if aggregateKeyFn, ok = aggKeyFunc(*aggregateBy); !ok {
+			fmt.Printf("Error invalid aggregate key: %v, pick from: %v\n",
+				*aggregateBy, strings.Join(aggregateKeys(), ", "))
+
+			os.Exit(1)
+		}
+	}
+
 	if *enableTUI {
 		*timeout = 0
+
+		// The TUI's column layout is per-flow; there is no aggregate view yet.
+		if *aggregate {
+			log.Printf("Warning: --aggregate is ignored in TUI mode")
+
+			*aggregate = false
+		}
 	}
 }

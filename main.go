@@ -76,8 +76,9 @@ func main() {
 
 	// Set below from whichever mode-specific BPF object is loaded.
 	var (
-		pktCount *ebpf.Map
-		l7Map    *ebpf.Map
+		pktCount   *ebpf.Map
+		l7Map      *ebpf.Map
+		totalCount *ebpf.Map
 	)
 
 	switch {
@@ -99,6 +100,7 @@ func main() {
 
 		pktCount = objsCgroupSkb.PktCount
 		l7Map = objsCgroupSkb.FlowAppProto
+		totalCount = objsCgroupSkb.TotalCount
 
 		cgroupSpec := loadAndPatchSpec("cgroup", loadCgroup, cgroupFsMagic)
 
@@ -139,6 +141,7 @@ func main() {
 
 		pktCount = objsKprobe.PktCount
 		l7Map = objsKprobe.FlowAppProto
+		totalCount = objsKprobe.TotalCount
 
 		cgroupSpec := loadAndPatchSpec("cgroup", loadCgroup, cgroupFsMagic)
 
@@ -196,6 +199,7 @@ func main() {
 
 		pktCount = objsXDP.PktCount
 		l7Map = objsXDP.FlowAppProto
+		totalCount = objsXDP.TotalCount
 
 		links = startXDP(objsXDP, iface, links)
 
@@ -217,6 +221,7 @@ func main() {
 
 		pktCount = objsTC.PktCount
 		l7Map = objsTC.FlowAppProto
+		totalCount = objsTC.TotalCount
 
 		links = startTC(objsTC, iface, links)
 	}
@@ -226,49 +231,92 @@ func main() {
 
 	startTime := time.Now()
 
-	//nolint:nestif
 	if *enableTUI {
 		drawTUI(pktCount, l7Map, startTime)
-	} else {
-		signalCh := make(chan os.Signal, 1)
 
-		signal.Notify(signalCh, os.Interrupt, syscall.SIGTERM)
-		defer signal.Stop(signalCh)
+		return
+	}
+
+	// Fatal handling stays in main so runCLI's defers always run first.
+	if err := runCLI(c1, cancel, pktCount, l7Map, totalCount, startTime); err != nil {
+		log.Fatalf("Error reading eBPF map: %v", err)
+	}
+}
+
+// runCLI waits for the capture window to close (timeout or signal), then reads
+// the counters once and renders them. Split out of main so that main stays a
+// mode-selection switch and neither function trips the complexity limit.
+func runCLI(ctx context.Context, cancel context.CancelFunc,
+	pktCount, l7Map, totalCount *ebpf.Map, startTime time.Time,
+) error {
+	signalCh := make(chan os.Signal, 1)
+
+	signal.Notify(signalCh, os.Interrupt, syscall.SIGTERM)
+	defer signal.Stop(signalCh)
+
+	go func() {
+		s := <-signalCh
+		_, _ = fmt.Fprintf(os.Stderr, "Received %v signal, trying to exit...\n", s)
+
+		cancel()
+	}()
+
+	if *timeout > 0 {
+		log.Printf("Listening for %v before exiting", durafmt.Parse(*timeout))
 
 		go func() {
-			s := <-signalCh
-			_, _ = fmt.Fprintf(os.Stderr, "Received %v signal, trying to exit...\n", s)
-
+			time.Sleep(*timeout)
 			cancel()
 		}()
-
-		if *timeout > 0 {
-			log.Printf("Listening for %v before exiting", durafmt.Parse(*timeout))
-
-			go func() {
-				time.Sleep(*timeout)
-				cancel()
-			}()
-		}
-
-		<-c1.Done()
-
-		m, err := processMap(pktCount, l7Map, startTime, bitrateSort, nil)
-		if err != nil {
-			// LRU per-CPU iteration can abort under churn.
-			if errors.Is(err, ebpf.ErrIterationAborted) {
-				_, _ = fmt.Fprint(os.Stderr, "Iteration aborted while reading eBPF map, output may be incomplete\n")
-			} else {
-				log.Fatalf("Error reading eBPF map: %v", err)
-			}
-		}
-
-		if *jsonOutput {
-			outputJSON(m)
-		} else {
-			fmt.Print(outputPlain(m, *useKProbes || *useCGroup != ""))
-		}
 	}
+
+	<-ctx.Done()
+
+	// Totals-only: the BPF programs never populated pkt_count, so skip the
+	// per-flow read entirely. This is the O(possible CPUs) path, and the only
+	// one whose byte count survives LRU eviction under flow churn.
+	if aggregateTotalsOnly() {
+		total, err := readTotals(totalCount, startTime)
+		if err != nil {
+			return err
+		}
+
+		emitAggregate([]aggEntry{total})
+
+		return nil
+	}
+
+	m, err := processMap(pktCount, l7Map, startTime, bitrateSort, nil)
+	if err != nil {
+		// LRU per-CPU iteration can abort under churn; anything else is fatal.
+		if !errors.Is(err, ebpf.ErrIterationAborted) {
+			return err
+		}
+
+		_, _ = fmt.Fprint(os.Stderr, "Iteration aborted while reading eBPF map, output may be incomplete\n")
+	}
+
+	switch {
+	case *aggregate:
+		emitAggregate(aggregateStats(m, aggregateKeyFn))
+	case *jsonOutput:
+		outputJSON(m)
+	default:
+		fmt.Print(outputPlain(m, *useKProbes || *useCGroup != ""))
+	}
+
+	return nil
+}
+
+// emitAggregate renders aggregate rows in whichever format was requested.
+func emitAggregate(agg []aggEntry) {
+	if *jsonOutput {
+		outputJSON(agg)
+
+		return
+	}
+
+	fmt.Print(outputAggPlain(agg))
 }
 
 // loadAndPatchSpec loads name's BPF CollectionSpec and applies every runtime
@@ -291,6 +339,7 @@ func loadAndPatchSpec(name string, loader func() (*ebpf.CollectionSpec, error),
 
 	applyMaxEntries(spec)
 	applyArpEnabled(spec)
+	applyAggregateOnly(spec)
 
 	return spec
 }
@@ -331,6 +380,32 @@ func applyMaxEntries(spec *ebpf.CollectionSpec) {
 			m.MaxEntries = uint32(*maxEntries)
 		}
 	}
+}
+
+// aggregateTotalsOnly reports whether this run wants only the grand total.
+// --aggregate-by is deliberately excluded: grouping by cgroup/pid/comm needs
+// the per-flow rows, so it cannot use the BPF-side counter and must fall back
+// to summing pkt_count in userspace.
+func aggregateTotalsOnly() bool {
+	return *aggregate && aggregateKeyFn == nil
+}
+
+// applyAggregateOnly patches the BPF-side aggregate_only toggle. When set, the
+// verifier folds away every per-flow write — the pkt_count hash update and the
+// L7 sniffer — leaving only the total_count bump, which is both cheaper per
+// packet and immune to LRU eviction. Silently no-ops on specs without the
+// variable (e.g. the cgroup_mkdir tracer).
+func applyAggregateOnly(spec *ebpf.CollectionSpec) {
+	if !aggregateTotalsOnly() {
+		return
+	}
+
+	v, ok := spec.Variables["aggregate_only"]
+	if !ok || v == nil {
+		return
+	}
+
+	_ = v.Set(uint8(1))
 }
 
 // applyArpEnabled patches the BPF-side arp_enabled toggle. Only meaningful for

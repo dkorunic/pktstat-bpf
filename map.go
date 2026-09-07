@@ -22,6 +22,11 @@ const (
 	initialStatsHint = 4096
 )
 
+// errNoTotalCount is returned when a capture mode did not load a total_count
+// map. Unreachable today — all four counter programs declare it — but a future
+// capture mode could omit it, and a nil map would otherwise panic.
+var errNoTotalCount = errors.New("total_count map is unavailable in this capture mode")
+
 type batchBuffers struct {
 	keys   []tcStatkey
 	values []tcStatvalue
@@ -37,6 +42,7 @@ var (
 	mapMaxEntries            uint32
 	possibleCPUs             int
 	checkBatchMapSupportOnce sync.Once
+	possibleCPUsOnce         sync.Once
 
 	batchPool   sync.Pool
 	l7BatchPool sync.Pool
@@ -65,6 +71,64 @@ func internComm(bs [16]int8) string {
 	commIntern[bs] = s
 
 	return s
+}
+
+// resolvePossibleCPUs initialises possibleCPUs exactly once. It lives outside
+// listMap's sync.Once because a totals-only run (--aggregate) never reads
+// pkt_count and so never enters that function, yet still needs the per-CPU
+// slot count to size the total_count lookup buffer.
+func resolvePossibleCPUs() int {
+	possibleCPUsOnce.Do(func() {
+		cpus, err := ebpf.PossibleCPU()
+		if err != nil || cpus < 1 {
+			cpus = 1
+		}
+
+		possibleCPUs = cpus
+	})
+
+	return possibleCPUs
+}
+
+// runDuration returns the elapsed capture time in seconds, floored so that
+// bitrate division can never blow up on a sub-nanosecond run.
+func runDuration(start time.Time) float64 {
+	dur := time.Since(start).Seconds()
+	if dur < minDuration {
+		dur = minDuration
+	}
+
+	return dur
+}
+
+// readTotals reads the BPF-side grand totals from the total_count per-CPU
+// array. Unlike pkt_count this map is an ARRAY and cannot evict, so the byte
+// count it returns is exact even when flow churn is pushing entries out of
+// the per-flow LRU hash — which is precisely the high-traffic case a
+// bandwidth threshold check exists to catch.
+//
+// Flows is deliberately left nil: a totals-only run never materialises the
+// per-flow rows, so the flow count is unknown rather than zero.
+func readTotals(m *ebpf.Map, start time.Time) (aggEntry, error) {
+	if m == nil {
+		return aggEntry{}, errNoTotalCount
+	}
+
+	// PERCPU_ARRAY: one slot per possible CPU, summed exactly like pkt_count.
+	vals := make([]tcStatvalue, resolvePossibleCPUs())
+	if err := m.Lookup(uint32(0), &vals); err != nil {
+		return aggEntry{}, err
+	}
+
+	sum := sumPerCPUValue(vals)
+
+	return aggEntry{
+		Key:     "",  // grand total: no grouping key
+		Flows:   nil, // unknown: per-flow rows were never materialised
+		Bytes:   sum.Bytes,
+		Packets: sum.Packets,
+		Bitrate: 8 * float64(sum.Bytes) / runDuration(start),
+	}, nil
 }
 
 // sumPerCPUValue collapses a per-CPU statvalue vector into a single
@@ -115,11 +179,7 @@ func checkBatchMapSupport(m *ebpf.Map) bool {
 func listMap(m *ebpf.Map, l7 *ebpf.Map, start time.Time, buf []statEntry) ([]statEntry, error) {
 	checkBatchMapSupportOnce.Do(func() {
 		// Resolve before allocating per-CPU value buffers.
-		cpus, err := ebpf.PossibleCPU()
-		if err != nil || cpus < 1 {
-			cpus = 1
-		}
-		possibleCPUs = cpus
+		resolvePossibleCPUs()
 
 		batchPool = sync.Pool{
 			New: func() any {
@@ -168,10 +228,7 @@ func listMapBatch(m *ebpf.Map, appProtoByFlow map[tcFlowkey]uint8, start time.Ti
 	keys := batch.keys
 	values := batch.values // flat: batchSize × possibleCPUs
 
-	dur := time.Since(start).Seconds()
-	if dur < minDuration {
-		dur = minDuration
-	}
+	dur := runDuration(start)
 
 	var stats []statEntry
 	if buf != nil {
@@ -220,10 +277,7 @@ func listMapIterate(m *ebpf.Map, appProtoByFlow map[tcFlowkey]uint8, start time.
 	// Per-CPU iterator wants a slice of length PossibleCPU.
 	val := make([]tcStatvalue, possibleCPUs)
 
-	dur := time.Since(start).Seconds()
-	if dur < minDuration {
-		dur = minDuration
-	}
+	dur := runDuration(start)
 
 	var stats []statEntry
 	if buf != nil {

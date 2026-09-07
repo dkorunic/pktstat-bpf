@@ -30,3 +30,19 @@ type kprobeHook struct {
 	prog   *ebpf.Program
 	kprobe string
 }
+
+// aggEntry is one aggregated row: either the grand total (Key == "") or one
+// group under --aggregate-by.
+//
+// Flows counts the per-flow rows collapsed into this entry. It is a pointer
+// because a totals-only run reads the BPF total_count counter without ever
+// materialising per-flow rows, so the flow count is genuinely unknown there —
+// and reporting 0 would be indistinguishable from "no traffic". Nil means
+// unknown and is omitted from both output formats.
+type aggEntry struct {
+	Flows   *uint64 `json:"flows,omitempty"`
+	Key     string  `json:"key,omitempty"`
+	Bytes   uint64  `json:"bytes"`
+	Packets uint64  `json:"packets"`
+	Bitrate float64 `json:"bitrate"`
+}
